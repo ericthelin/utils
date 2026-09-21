@@ -22,7 +22,7 @@ not an afterthought.
 ## Repository Layout (MUST follow for every tool)
 
 Each tool gets its own directory named after the tool, containing everything
-for it. The command is exposed by a symlink in the repository root.
+for it. Commands are exposed, without file extensions, as symlinks in `bin/`.
 
 ```text
 utils/
@@ -32,25 +32,37 @@ utils/
 ├── CLAUDE.md              symlink -> AGENTS.md
 ├── GEMINI.md              symlink -> AGENTS.md
 ├── .github/copilot-instructions.md   symlink -> ../AGENTS.md
-├── <command>              symlink -> <tool>/<command>   (one per executable)
+├── bin/
+│   └── <command>          symlink -> ../<tool>/<implementation>   (one per command)
 ├── <tool>/
 │   ├── README.md          documentation for the tool (required)
-│   ├── <command>          the executable implementation (chmod +x)
+│   ├── <implementation>   the executable (chmod +x), e.g. make_dvd.py or plonk
 │   └── tests/
 │       └── test_<tool>.py   (or test_*.sh) automated tests
 └── tests/run_tests.sh     discovers and runs every <tool>/tests/test_*
 ```
 
 - **Tool directory name** is the tool's name in `snake_case` (e.g. `make_dvd`).
-- **Command name** keeps its extension when it has one (`make_dvd.py`), which
-  also avoids a clash with the tool directory of the same base name.
-- **Symlinks are relative** (`ln -s make_dvd/make_dvd.py make_dvd.py`) so the
+- **Commands have no file extension.** Users type `make_dvd`, `to_mp3`, `tgz`,
+  never `make_dvd.py`. The implementation file inside the tool directory may
+  keep an extension (`make_dvd.py`, `tgz.pl`) so editors and tests recognise it;
+  its shebang decides the interpreter. The `bin/` symlink drops the extension.
+- **`bin/` is what goes on `PATH`.** Because the commands live in `bin/` and not
+  the repository root, a command can share its name with its tool directory
+  (`bin/plonk` and `plonk/`) without a clash.
+- **Symlinks are relative** (`ln -s ../make_dvd/make_dvd.py bin/make_dvd`) so the
   repository works wherever it is cloned. Never create absolute symlinks.
-- A tool with several commands gets one root symlink per command.
+- A tool with several commands gets one `bin/` symlink per command.
 - Put the implementation, its documentation and its tests inside the tool
   directory. Do not scatter tool files across the repository root.
 - Anything a tool needs at run time (data files, helper modules) lives in the
   tool directory too.
+- **Tools that call other tools** find them as `<repo>/bin/<command>` relative to
+  their own real location (falling back to `PATH`), never by absolute paths.
+- **Never put secrets, keys, tokens or personal data in this repository.** It is
+  public. Read them from a config file under `~/.config/<tool>/` (or an
+  environment variable), document the file's format in the tool's README, and
+  ship none.
 - Older scripts (currently `proxmox/`) predate this layout. Migrate them to it
   when you next change them; do not start new tools in the old style.
 
@@ -106,8 +118,8 @@ tool whose README disagrees with its `--help` is broken.
 
 ## Adding a New Tool (checklist)
 
-1. Create `<tool>/` with the implementation, `chmod +x` the command.
-2. Create the relative symlink in the repository root.
+1. Create `<tool>/` with the implementation, `chmod +x` it.
+2. Create the relative, extensionless symlink in `bin/`.
 3. Add `<tool>/tests/test_<tool>.py` (or `.sh`) covering the meaningful logic
    (parsing, calculation, filtering, command construction). Run
    `tests/run_tests.sh`.

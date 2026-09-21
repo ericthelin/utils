@@ -11,7 +11,7 @@ them back to back on its own. When you are ready, it can burn the disc too.
 Illustrative session:
 
 ```console
-$ make_dvd.py "Family Holiday 2019.mkv" "Birthday.mp4" "School Play.avi"
+$ make_dvd "Family Holiday 2019.mkv" "Birthday.mp4" "School Play.avi"
 3 title(s), 94.2 min, NTSC 16:9, video 8000 kbps, target dvd5, menu yes
   1. Family Holiday 2019.mkv: 12 chapters (source)
   2. Birthday.mp4: 4 chapters (5 min)
@@ -53,16 +53,16 @@ Burn dvd.iso to a blank DVD now? [y/N]
 
 ```bash
 # 1. Install the dependencies (see "Installation" below), then:
-make_dvd.py movie.mkv                  # movie.iso in the current directory
-make_dvd.py ep1.mkv ep2.mkv ep3.mkv    # dvd.iso with an auto-playing menu
-make_dvd.py                            # no arguments: pick files in a chooser
-make_dvd.py movie.iso                  # burn an existing ISO (asks first)
+make_dvd movie.mkv                  # movie.iso in the current directory
+make_dvd ep1.mkv ep2.mkv ep3.mkv    # dvd.iso with an auto-playing menu
+make_dvd                            # no arguments: pick files in a chooser
+make_dvd movie.iso                  # burn an existing ISO (asks first)
 ```
 
 ## Usage
 
 ```text
-make_dvd.py [options] [files ...]
+make_dvd [options] [files ...]
 ```
 
 | Option | Meaning |
@@ -85,19 +85,19 @@ make_dvd.py [options] [files ...]
 
 ```bash
 # Preview what would happen, without encoding anything
-make_dvd.py -n *.mkv
+make_dvd -n *.mkv
 
 # A dual-layer disc for a long series, written to a specific file
-make_dvd.py -s dvd9 -t "Season One" -o ~/isos/season1.iso s01e*.mkv
+make_dvd -s dvd9 -t "Season One" -o ~/isos/season1.iso s01e*.mkv
 
 # Build and burn in one go, no questions asked
-make_dvd.py --burn --speed 4 wedding.mp4
+make_dvd --burn --speed 4 wedding.mp4
 
 # Force PAL and 4:3 for an old European TV
-make_dvd.py --standard pal --aspect 4:3 tape_transfer.avi
+make_dvd --standard pal --aspect 4:3 tape_transfer.avi
 
 # Just burn an ISO you already have (asks before starting)
-make_dvd.py ~/isos/season1.iso
+make_dvd ~/isos/season1.iso
 ```
 
 ## How it behaves
@@ -246,7 +246,7 @@ Run the tool inside **WSL 2**, which gives you a real Ubuntu:
    finish the Ubuntu setup.
 2. In the Ubuntu shell, follow the Debian/Ubuntu instructions above. Your
    Windows drives appear under `/mnt/c/...`, so
-   `make_dvd.py /mnt/c/Users/you/Videos/movie.mp4 -o /mnt/c/Users/you/movie.iso`
+   `make_dvd /mnt/c/Users/you/Videos/movie.mp4 -o /mnt/c/Users/you/movie.iso`
    works.
 3. WSL cannot reach your DVD drive, so burn the finished ISO from Windows:
    right-click the `.iso` and choose **Burn disc image**, or use a free tool
@@ -267,20 +267,19 @@ Native Windows and BSD systems are not supported.
 for t in ffmpeg ffprobe dvdauthor spumux genisoimage convert; do
   command -v "$t" >/dev/null && echo "ok      $t" || echo "MISSING $t"
 done
-make_dvd.py --help
+make_dvd --help
 ```
 
-Every line should say `ok`. Running `make_dvd.py -n somevideo.mkv` also
+Every line should say `ok`. Running `make_dvd -n somevideo.mkv` also
 confirms the tools work together without encoding anything.
 
-### Putting `make_dvd.py` on your PATH
+### Putting `make_dvd` on your PATH
 
-The repository keeps the real script in `make_dvd/` and a symlink to it at the
-repository root. Add the repository root to your `PATH` (or symlink
-`make_dvd.py` into a directory that already is):
+The repository keeps the real script in `make_dvd/` and an extensionless command
+link in `bin/`. Add that directory to your `PATH`:
 
 ```bash
-ln -s /path/to/utils/make_dvd.py ~/.local/bin/make_dvd.py
+export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 ```
 
 ## Troubleshooting

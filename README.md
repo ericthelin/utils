@@ -12,13 +12,13 @@ need and ignore the rest.
 
 ## Using a tool
 
-Every tool has a symlink to its command in the repository root, so putting this
+Every tool has an extensionless command link in `bin/`, so putting that
 directory on your `PATH` makes all of them available:
 
 ```bash
 git clone git@github.com:ericthelin/utils.git
-export PATH="$PWD/utils:$PATH"      # add to your shell profile to keep it
-make_dvd.py --help
+export PATH="$PWD/utils/bin:$PATH"      # add to your shell profile to keep it
+make_dvd --help
 ```
 
 Each tool's README lists its dependencies and how to install them on Linux,
@@ -30,10 +30,10 @@ macOS and Windows.
 utils/
 ├── README.md            this index
 ├── AGENTS.md            rules for contributors and AI coding agents
-├── <tool>.py            symlink to the tool's command
+├── bin/                 one extensionless symlink per command (put this on PATH)
 ├── <tool>/
 │   ├── README.md        full documentation for the tool
-│   ├── <tool>.py        the implementation
+│   ├── <tool>.<ext>     the implementation
 │   └── tests/           the tool's automated tests
 └── tests/run_tests.sh   runs every tool's tests
 ```
