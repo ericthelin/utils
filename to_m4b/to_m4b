@@ -1,0 +1,627 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use File::Basename;
+use File::Find;
+use File::Path qw(make_path);
+use File::Spec;
+use Getopt::Long;
+use Term::ANSIColor;
+use JSON;
+use File::Temp qw(tempfile tempdir);
+use POSIX qw(strftime);
+use sigtrap 'handler' => \&cleanup_and_exit, 'INT';
+
+my %options;
+Getopt::Long::Configure("gnu_getopt");
+GetOptions(
+    'help|h'          => \$options{help},
+    'verbose|v+'      => \$options{verbose},
+    'dry_run|n'       => \$options{dry_run},
+    'keep|k'          => \$options{keep_original},
+    'out_dir|d=s'     => \$options{out_dir},
+    'title|t=s'       => \$options{title},
+    'author|a=s'      => \$options{author},
+    'narrator|r=s'    => \$options{narrator},
+    'force_combine|c' => \$options{force_combine},
+    'bitrate|b=s'     => \$options{bitrate},
+) || help();
+
+help() if $options{help};
+
+if (scalar(@ARGV) == 0) {
+    help();
+}
+
+# Default bitrate for audiobooks
+$options{bitrate} ||= '32k';
+
+# Global variables for signal handling
+my $current_output_file;
+my $ffmpeg_pid;
+
+# Check for required programs
+my %programs = (
+    'ffmpeg'    => 'ffmpeg',
+    'ffprobe'   => 'ffmpeg',
+    'mp3info'   => 'mp3info',
+);
+
+check_programs(%programs);
+
+if ( $options{out_dir} && !-d $options{out_dir} && !$options{dry_run} ) {
+    make_path( $options{out_dir} );
+}
+
+# Main processing logic
+for my $input (@ARGV) {
+    if (-d $input) {
+        process_directory($input);
+    } elsif (-f $input) {
+        if ($options{force_combine} && scalar(@ARGV) > 1) {
+            # Multiple files that should be combined
+            process_files_as_chapters(\@ARGV);
+            last; # Process all files at once
+        } else {
+            process_individual_file($input);
+        }
+    } else {
+        warn colored("ERROR: '$input' is not a valid file or directory", 'red') . "\n";
+    }
+}
+
+sub process_directory {
+    my $dir = shift;
+
+    out("Processing directory: $dir\n", 'cyan');
+
+    # Find all MP3 and Opus files in directory
+    my @audio_files;
+    find(sub {
+        return unless -f $_;
+        return unless /\.(mp3|opus)$/i;
+        push @audio_files, $File::Find::name;
+    }, $dir);
+
+    @audio_files = sort @audio_files;
+
+    if (!@audio_files) {
+        warn colored("No MP3 or Opus files found in directory: $dir", 'yellow') . "\n";
+        return;
+    }
+
+    out("Found " . scalar(@audio_files) . " audio files\n", 'green');
+
+    # Extract metadata from directory name and first file
+    my ($title, $author, $narrator) = extract_metadata_from_directory($dir, $audio_files[0]);
+
+    # Create output filename
+    my $output_name = create_output_filename($title, $author);
+    my $output_file = ($options{out_dir} || dirname($dir)) . "/$output_name.m4b";
+
+    # Combine files as chapters
+    combine_files_as_chapters(\@audio_files, $output_file, $title, $author, $narrator);
+}
+
+sub process_files_as_chapters {
+    my $files = shift;
+
+    out("Processing " . scalar(@$files) . " files as chapters\n", 'cyan');
+
+    # Extract metadata from first file and directory
+    my $first_file = $files->[0];
+    my $dir = dirname($first_file);
+    my ($title, $author, $narrator) = extract_metadata_from_directory($dir, $first_file);
+
+    # Create output filename
+    my $output_name = create_output_filename($title, $author);
+    my $output_file = ($options{out_dir} || $dir) . "/$output_name.m4b";
+
+    # Combine files as chapters
+    combine_files_as_chapters($files, $output_file, $title, $author, $narrator);
+}
+
+sub process_individual_file {
+    my $file = shift;
+
+    out("Processing individual file: $file\n", 'cyan');
+
+    # Extract metadata from file
+    my ($title, $author, $narrator) = extract_metadata_from_file($file);
+
+    # Create output filename
+    my $base_name = basename($file, qw(.mp3 .opus));
+    my $output_name = create_output_filename($title || $base_name, $author);
+    my $output_file = ($options{out_dir} || dirname($file)) . "/$output_name.m4b";
+
+    # Convert single file
+    convert_single_file($file, $output_file, $title, $author, $narrator);
+}
+
+sub extract_metadata_from_directory {
+    my ($dir, $sample_file) = @_;
+
+    my $dir_name = basename($dir);
+    my $title = $options{title};
+    my $author = $options{author};
+    my $narrator = $options{narrator};
+
+    # Try to parse directory name patterns
+    if (!$title || !$author) {
+        # Pattern: "Author - Title"
+        if ($dir_name =~ /^(.+?)\s*-\s*(.+)$/) {
+            $author ||= $1;
+            $title ||= $2;
+        }
+        # Pattern: "Title by Author"
+        elsif ($dir_name =~ /^(.+?)\s+by\s+(.+)$/i) {
+            $title ||= $1;
+            $author ||= $2;
+        }
+        # Pattern: "Author Name - Book Title (Narrator Name)"
+        elsif ($dir_name =~ /^(.+?)\s*-\s*(.+?)\s*\((.+?)\)$/) {
+            $author ||= $1;
+            $title ||= $2;
+            $narrator ||= $3;
+        }
+        else {
+            # Use directory name as title if can't parse
+            $title ||= $dir_name;
+        }
+    }
+
+    # Extract from file metadata if still missing
+    if ($sample_file && (!$title || !$author || !$narrator)) {
+        my ($file_title, $file_author, $file_narrator) = extract_metadata_from_file($sample_file);
+        $title ||= $file_title;
+        $author ||= $file_author;
+        $narrator ||= $file_narrator;
+    }
+
+    out("Detected - Title: '$title', Author: '$author', Narrator: '$narrator'\n", 'yellow') if $options{verbose};
+
+    return ($title, $author, $narrator);
+}
+
+sub extract_metadata_from_file {
+    my $file = shift;
+
+    my $title = $options{title};
+    my $author = $options{author};
+    my $narrator = $options{narrator};
+
+    if ($file =~ /\.mp3$/i) {
+        # Extract MP3 metadata
+        my $cmd = "mp3info " . cmd_escape($file);
+        my @mp3_info = `$cmd 2>/dev/null`;
+
+        for my $line (@mp3_info) {
+            if ($line =~ /Title:\s*(.+?)(\s*Track:.*)?$/) {
+                $title ||= trim($1);
+            }
+            if ($line =~ /Artist:\s*(.+)$/) {
+                $author ||= trim($1);
+            }
+            if ($line =~ /Album:\s*(.+?)(\s*Year:.*)?$/) {
+                my $album = trim($1);
+                # Use album as title if no title found
+                $title ||= $album if $album && $album ne 'Unknown';
+            }
+        }
+    } elsif ($file =~ /\.opus$/i) {
+        # Extract Opus metadata using ffprobe
+        my $cmd = "ffprobe -v quiet -print_format json -show_format " . cmd_escape($file);
+        my $json_output = `$cmd 2>/dev/null`;
+
+        if ($json_output) {
+            eval {
+                my $data = decode_json($json_output);
+                if ($data->{format} && $data->{format}->{tags}) {
+                    my $tags = $data->{format}->{tags};
+                    $title ||= $tags->{TITLE} || $tags->{title};
+                    $author ||= $tags->{ARTIST} || $tags->{artist} || $tags->{ALBUM_ARTIST} || $tags->{album_artist};
+                    $narrator ||= $tags->{NARRATOR} || $tags->{narrator};
+                }
+            };
+        }
+    }
+
+    # Try to extract from filename if metadata missing
+    if (!$title || !$author) {
+        my $filename = basename($file, qw(.mp3 .opus));
+
+        # Remove common prefixes/suffixes - only remove what looks like track numbers
+        # Pattern 1: digits followed by dash/underscore/dot
+        $filename =~ s/^\d{1,3}[._-]+//;  # Remove "01-", "001_", "12."
+        # Pattern 2: digits followed by space and dash (common format "01 - Title")
+        $filename =~ s/^\d{1,3}\s+-\s*//;  # Remove "01 - ", "001 -"
+        $filename =~ s/\s*-\s*\d+\s*$//; # Remove trailing track numbers
+
+        # Pattern: "Author - Title"
+        if ($filename =~ /^(.+?)\s*-\s*(.+)$/) {
+            $author ||= $1;
+            $title ||= $2;
+        }
+        # Pattern: "Title by Author"
+        elsif ($filename =~ /^(.+?)\s+by\s+(.+)$/i) {
+            $title ||= $1;
+            $author ||= $2;
+        }
+        else {
+            $title ||= $filename;
+        }
+    }
+
+    return (trim($title), trim($author), trim($narrator));
+}
+
+sub combine_files_as_chapters {
+    my ($files, $output_file, $title, $author, $narrator) = @_;
+
+    out("Combining " . scalar(@$files) . " files into: $output_file\n", 'green');
+
+    # Set global variable for signal handling
+    $current_output_file = $output_file;
+
+    # Create temporary directory for processing
+    my $temp_dir = tempdir(CLEANUP => 1);
+    my $concat_file = "$temp_dir/concat.txt";
+    my $chapters_file = "$temp_dir/chapters.txt";
+
+    # Prepare files and build chapter list
+    my @chapters;
+    my $current_time = 0;
+
+    open(my $concat_fh, '>', $concat_file) or die "Cannot create concat file: $!";
+
+    for my $i (0 .. $#$files) {
+        my $file = $files->[$i];
+        my $chapter_title = extract_chapter_title($file, $i + 1);
+
+        # Get duration of current file
+        my $duration = get_audio_duration($file);
+        if (!defined $duration) {
+            warn colored("WARNING: Cannot get duration for $file", 'yellow') . "\n";
+            next;
+        }
+
+        # Add to concat list - use absolute path with proper escaping for concat file format
+        # In concat format, paths are enclosed in single quotes and internal single quotes
+        # are escaped by replacing ' with '\''
+        my $abs_file = File::Spec->rel2abs($file);
+        $abs_file =~ s/'/'\\''/g;  # Escape single quotes in the path
+        print $concat_fh "file '$abs_file'\n";
+
+        # Add chapter info
+        push @chapters, {
+            title => $chapter_title,
+            start => $current_time,
+            end => $current_time + $duration
+        };
+
+        $current_time += $duration;
+
+        out("Chapter " . ($i + 1) . ": $chapter_title (" . format_duration($duration) . ")\n", 'cyan') if $options{verbose};
+    }
+
+    close($concat_fh);
+
+    # Create chapters metadata file
+    create_chapters_file($chapters_file, \@chapters);
+
+    # Build FFmpeg command
+    my @cmd_parts = (
+        'ffmpeg',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', cmd_escape($concat_file),
+        '-i', cmd_escape($chapters_file),
+        '-map', '0:a:0',
+        '-map_metadata', '1',
+        '-codec:a', 'aac',
+        '-b:a', $options{bitrate},
+        '-f', 'mp4',
+        '-movflags', '+faststart'
+    );
+
+    # Add metadata - metadata values should be passed as shell-escaped single arguments
+    push @cmd_parts, '-metadata', cmd_escape("title=$title") if $title;
+    push @cmd_parts, '-metadata', cmd_escape("artist=$author") if $author;
+    push @cmd_parts, '-metadata', cmd_escape("album_artist=$author") if $author;
+    push @cmd_parts, '-metadata', cmd_escape("narrator=$narrator") if $narrator;
+    push @cmd_parts, '-metadata', cmd_escape('genre=Audiobook');
+    push @cmd_parts, '-metadata', cmd_escape('date=' . strftime('%Y', localtime()));
+
+    push @cmd_parts, cmd_escape($output_file);
+
+    my $cmd = join(' ', @cmd_parts);
+
+    if (run($cmd) == 0 && -f $output_file && -s $output_file > 0) {
+        out("Successfully created: $output_file\n", 'bold green');
+
+        # Remove original files if requested
+        if (!$options{keep_original} && !$options{dry_run}) {
+            for my $file (@$files) {
+                unlink($file) or warn "Could not remove $file: $!";
+            }
+            out("Removed " . scalar(@$files) . " original files\n", 'yellow');
+        }
+    } else {
+        warn colored("ERROR: Failed to create M4B file", 'red') . "\n";
+    }
+
+    # Clear global variable
+    $current_output_file = undef;
+}
+
+sub convert_single_file {
+    my ($input_file, $output_file, $title, $author, $narrator) = @_;
+
+    out("Converting: $input_file -> $output_file\n", 'green');
+
+    # Set global variable for signal handling
+    $current_output_file = $output_file;
+
+    my @cmd_parts = (
+        'ffmpeg',
+        '-i', cmd_escape($input_file),
+        '-map', '0:a:0',
+        '-codec:a', 'aac',
+        '-b:a', $options{bitrate},
+        '-f', 'mp4',
+        '-movflags', '+faststart'
+    );
+
+    # Add metadata - metadata values should be passed as shell-escaped single arguments
+    push @cmd_parts, '-metadata', cmd_escape("title=$title") if $title;
+    push @cmd_parts, '-metadata', cmd_escape("artist=$author") if $author;
+    push @cmd_parts, '-metadata', cmd_escape("album_artist=$author") if $author;
+    push @cmd_parts, '-metadata', cmd_escape("narrator=$narrator") if $narrator;
+    push @cmd_parts, '-metadata', cmd_escape('genre=Audiobook');
+    push @cmd_parts, '-metadata', cmd_escape('date=' . strftime('%Y', localtime()));
+
+    push @cmd_parts, cmd_escape($output_file);
+
+    my $cmd = join(' ', @cmd_parts);
+
+    if (run($cmd) == 0 && -f $output_file && -s $output_file > 0) {
+        out("Successfully created: $output_file\n", 'bold green');
+
+        # Remove original file if requested
+        if (!$options{keep_original} && !$options{dry_run}) {
+            unlink($input_file) or warn "Could not remove $input_file: $!";
+            out("Removed original file\n", 'yellow');
+        }
+    } else {
+        warn colored("ERROR: Failed to create M4B file", 'red') . "\n";
+    }
+
+    # Clear global variable
+    $current_output_file = undef;
+}
+
+sub extract_chapter_title {
+    my ($file, $chapter_num) = @_;
+
+    my $basename = basename($file, qw(.mp3 .opus));
+
+    # Remove track numbers from beginning - only remove what looks like track numbers
+    # Pattern 1: digits followed by dash/underscore/dot
+    $basename =~ s/^\d{1,3}[._-]+//;  # Remove "01-", "001_", "12."
+    # Pattern 2: digits followed by space and dash (common format "01 - Title")
+    $basename =~ s/^\d{1,3}\s+-\s*//;  # Remove "01 - ", "001 -"
+
+    # Remove common patterns
+    $basename =~ s/\s*-\s*\d+\s*$//; # Remove trailing numbers
+    $basename =~ s/^(Chapter|Ch\.?)\s*\d+[\s._-]*//i; # Remove "Chapter X" prefix
+
+    # Use cleaned basename or fallback to generic chapter name
+    return $basename || "Chapter $chapter_num";
+}
+
+sub get_audio_duration {
+    my $file = shift;
+
+    my $cmd = "ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 " . cmd_escape($file);
+    my $output = `$cmd 2>/dev/null`;
+
+    return unless $output;
+    chomp($output);
+    return $output =~ /^[\d.]+$/ ? $output : undef;
+}
+
+sub create_chapters_file {
+    my ($file, $chapters) = @_;
+
+    open(my $fh, '>', $file) or die "Cannot create chapters file: $!";
+
+    print $fh ";FFMETADATA1\n";
+
+    for my $i (0 .. $#$chapters) {
+        my $chapter = $chapters->[$i];
+
+        print $fh "[CHAPTER]\n";
+        print $fh "TIMEBASE=1/1000\n";
+        print $fh "START=" . int($chapter->{start} * 1000) . "\n";
+        print $fh "END=" . int($chapter->{end} * 1000) . "\n";
+        print $fh "title=" . $chapter->{title} . "\n";
+    }
+
+    close($fh);
+}
+
+sub create_output_filename {
+    my ($title, $author) = @_;
+
+    my $filename = '';
+
+    if ($author && $title) {
+        $filename = "$author - $title";
+    } elsif ($title) {
+        $filename = $title;
+    } else {
+        $filename = "Unknown Audiobook";
+    }
+
+    # Clean filename
+    $filename =~ s/[\\<>"|?*:,\/]/_/g;
+    $filename =~ s/\s+/ /g;
+    $filename =~ s/^\s+|\s+$//g;
+
+    return $filename;
+}
+
+sub format_duration {
+    my $seconds = shift;
+    my $hours = int($seconds / 3600);
+    my $mins = int(($seconds % 3600) / 60);
+    my $secs = int($seconds % 60);
+
+    if ($hours > 0) {
+        return sprintf("%d:%02d:%02d", $hours, $mins, $secs);
+    } else {
+        return sprintf("%d:%02d", $mins, $secs);
+    }
+}
+
+sub trim {
+    my $str = shift;
+    return unless defined $str;
+    $str =~ s/^\s+|\s+$//g;
+    return $str eq '' ? undef : $str;
+}
+
+sub out {
+    my ($text, $color) = @_;
+
+    if ($color) {
+        print colored($text, $color);
+    } else {
+        print $text;
+    }
+}
+
+sub run {
+    my $cmd = shift;
+
+    if ($options{verbose} || $options{dry_run}) {
+        out("$cmd\n", 'blue');
+    }
+
+    return 0 if $options{dry_run};
+
+    # If this is an FFmpeg command, track the process ID for signal handling
+    if ($cmd =~ /^ffmpeg\s/) {
+        # Fork to track the process
+        $ffmpeg_pid = fork();
+        if (!defined $ffmpeg_pid) {
+            die "Failed to fork: $!";
+        } elsif ($ffmpeg_pid == 0) {
+            # Child process - exec FFmpeg
+            exec($cmd) or die "Failed to exec: $!";
+        } else {
+            # Parent process - wait for FFmpeg to complete
+            waitpid($ffmpeg_pid, 0);
+            my $result = $?;
+            $ffmpeg_pid = undef;
+            return $result;
+        }
+    } else {
+        # Non-FFmpeg command - run normally
+        my $result = system($cmd);
+        return $result;
+    }
+}
+
+sub cmd_escape {
+    my $str = shift;
+    # Use shell quoting for better reliability with special characters
+    $str =~ s/'/'\\''/g;  # Escape single quotes by ending quote, adding escaped quote, starting new quote
+    return "'$str'";
+}
+
+sub check_programs {
+    my %programs = @_;
+
+    my @missing;
+    for my $prog (keys %programs) {
+        system("which $prog >/dev/null 2>&1");
+        if ($?) {
+            push @missing, $programs{$prog};
+        }
+    }
+
+    if (@missing) {
+        warn colored("Missing required programs. Install with:", 'red') . "\n";
+        warn "  sudo apt install " . join(' ', @missing) . "\n\n";
+        exit 1;
+    }
+}
+
+sub cleanup_and_exit {
+    my $signal = shift;
+
+    out("\n" . colored("Received signal $signal - cleaning up...", 'yellow') . "\n", 'yellow');
+
+    # Kill FFmpeg if it's running
+    if ($ffmpeg_pid) {
+        out("Terminating FFmpeg process ($ffmpeg_pid)...\n", 'yellow');
+        kill('TERM', $ffmpeg_pid);
+        waitpid($ffmpeg_pid, 0);
+        $ffmpeg_pid = undef;
+    }
+
+    # Clean up partial output file
+    if ($current_output_file && -f $current_output_file) {
+        out("Removing partial file: $current_output_file\n", 'yellow');
+        unlink($current_output_file) or warn "Could not remove $current_output_file: $!";
+    }
+
+    # Ask user if they want to continue with next file or exit
+    print colored("Continue processing remaining files? [y/N]: ", 'cyan');
+    my $response = <STDIN>;
+    chomp($response) if defined $response;
+
+    if ($response && $response =~ /^[yY]/) {
+        out("Continuing with next file...\n", 'green');
+        return; # Continue execution
+    } else {
+        out("Exiting...\n", 'red');
+        exit 1;
+    }
+}
+
+sub help {
+    print <<"END";
+Usage: $0 [options] <files or directories>
+
+Convert MP3 or Opus files to M4B audiobook format.
+
+Options:
+  --help, -h              Show this help
+  --verbose, -v           Verbose output (use -vv for extra verbose)
+  --dry_run, -n           Show what would be done without executing
+  --keep, -k              Keep original files after conversion
+  --out_dir, -d <dir>     Output directory for converted files
+  --title, -t <title>     Override book title
+  --author, -a <author>   Override book author
+  --narrator, -r <name>   Override narrator name
+  --force_combine, -c     Combine multiple individual files as chapters
+  --bitrate, -b <rate>    Audio bitrate (default: 32k)
+
+Examples:
+  $0 audiobook_directory/          # Combine all files in directory as chapters
+  $0 -c file1.mp3 file2.mp3        # Combine specific files as chapters
+  $0 single_book.mp3               # Convert single file to M4B
+  $0 -t "Book Title" -a "Author" file.mp3  # Override metadata
+
+The script will:
+- Auto-detect title and author from directory/file names and metadata
+- Create chapter markers when combining multiple files
+- Set appropriate audiobook metadata
+- Generate M4B files optimized for audiobook players
+
+END
+    exit 1;
+}
