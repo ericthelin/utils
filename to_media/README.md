@@ -34,9 +34,10 @@ $ to_media mp3 ~/Music/Album
   overwritten. Results are written to a hidden temporary file and renamed only
   when complete, so a crash or a full disk never leaves a half-written file, and
   a failed conversion never deletes a source.
-- **Tags and orientation preserved.** Music tags carry into the MP3. Photos are
-  rotated the way they were meant to be seen and keep their metadata unless you
-  ask for `--strip`.
+- **Metadata is kept, or you are told.** Tags, cover art, chapters, camera and GPS
+  data, recording dates and even a file's modification date carry over. Where a
+  format genuinely cannot hold something, a `note:` says exactly what was left out
+  and how to keep it (see [Metadata](#metadata-what-is-kept)).
 - **Folders in, folders out.** Give it a folder and it converts everything
   inside, recursively, in natural order (`track 2` before `track 10`). With
   `--out` the folder layout is preserved.
@@ -81,6 +82,7 @@ named `to_<format>` that points at `to_media.py` works the same as
 | `-n`, `--dry-run` | Show what would be done and stop. |
 | `--force` | Overwrite outputs that already exist. |
 | `--replace` | Delete each source after its output has been written successfully. Default: keep sources. |
+| `--no-preserve-times` | Give outputs the current time. Default: each output keeps its source's modification time (newest source for an audiobook). |
 | `-v`, `--verbose` | Report every file, not just skips and failures. |
 | `--queue`, `--follow` | For the planned job server. Not available yet. |
 
@@ -108,6 +110,7 @@ H.264 video with AAC audio in an `.mp4` (or `.mkv`), encoded with ffmpeg.
 | `--fps N` | Force a frame rate. |
 | `--deinterlace` | Deinterlace with yadif (for older TV and camcorder video). |
 | `--encoder x264\|nvenc` | `x264` on the CPU (default), or `nvenc` on an NVIDIA GPU, which is much faster. |
+| `--tags auto\|all\|standard` | Which tags an MP4 keeps; see [Metadata](#metadata-what-is-kept). MKV always keeps everything. |
 
 Chapters, metadata and **every** audio track are kept; the video is converted to
 the widely playable `yuv420p` format. Reads MKV, AVI, MOV, M4V, WMV, FLV, WebM,
@@ -177,7 +180,7 @@ converting a folder.
 - **Exit status.** `0` everything fine (skips are fine), `1` at least one file
   failed or nothing matched, `2` bad usage, a missing program, or a feature that
   is not available yet.
-- **mp3** carries the tags across (ID3v2.3 plus ID3v1). Cover art is not copied.
+- **mp3** carries the tags and cover pictures across (ID3v2.3 plus ID3v1).
 - **m4b** treats each folder you give as one book, ordered naturally, with a chapter
   per file named from the file name (track numbers and "Chapter N" prefixes are
   stripped). Title, author and narrator come from your options, then the folder
@@ -193,6 +196,42 @@ converting a folder.
 - **Progress.** On a terminal each file shows a live bar with the percentage,
   elapsed time and estimated time remaining, cleared when the file finishes.
   When output is redirected to a file or pipe, only the per-file lines are printed.
+
+## Metadata: what is kept
+
+The rule is that nothing is lost silently: it is either carried over, or a `note:`
+tells you what was left out. The table lists what each format does.
+
+| | Kept | Converted or limited |
+| --- | --- | --- |
+| **mp3** | Title, artist, album, album artist, composer, genre, date, copyright, publisher, comment, ReplayGain and other custom fields, **cover pictures** (with their descriptions), the file's modification date | Track and disc numbers with their totals are merged into `3/12` and `1/2`. ISRC and BPM are written as proper ID3 frames. **Lyrics** are kept but ffmpeg can only store them in a custom text field, which most players do not show. |
+| **h264 to MKV** | Everything: every tag (including custom ones), **cover pictures** as attachments, chapters, track titles and languages, subtitles, embedded fonts, the recording date, the file's modification date | Nothing is lost. This is the most complete container. |
+| **h264 to MP4** | Standard tags, cover pictures, chapters, track titles and languages, text subtitles, the recording date, the file's modification date | See below for tags that MP4 cannot hold. |
+| **m4b** | Title, author and narrator (from your options, the folder name or the first file), plus date, comment, description, copyright and language from the first file; the cover (embedded in the first file, or a `cover`/`folder`/`front` image in the folder); the newest source's modification date | MP4 has no publisher field, so the publisher is not carried. |
+| **jpg, png** | Everything ImageMagick reads: camera, lens and exposure data, capture date, **GPS location**, copyright, XMP, IPTC keywords and captions, colour profiles; rotation is applied and the orientation tag reset; the file's modification date | |
+| **webp** | EXIF, XMP, colour profiles, GPS, capture date, the file's modification date | WebP cannot store **IPTC** (keywords, caption, credits); a `note:` says so and points at jpg or png. |
+
+### Tags in MP4 files
+
+MP4's usual tag format holds only a fixed list of fields (title, artist, genre,
+description, comment, copyright and so on). Anything else, such as an MKV's
+`ACTOR` or `DIRECTOR`, or an iPhone's **location, camera model and original
+capture date**, needs ffmpeg's *QuickTime metadata* mode. That mode has a cost: it
+stores *every* tag that way, some tag editors do not read it, and it has no place
+for a cover picture. So `--tags` lets you choose:
+
+| `--tags` | Behaviour |
+| --- | --- |
+| `auto` (default) | If the file has extra tags and **no cover**, keep everything using QuickTime metadata (a `note:` says so). If it has extra tags **and a cover**, keep the cover and the standard tags and report the extra tags that were left out. |
+| `all` | Always keep every tag; a cover picture is dropped, and a `note:` says so. |
+| `standard` | Keep only the usual MP4 tags and the cover, quietly. |
+
+If a file has extra tags *and* a cover and you want both, convert to MKV
+(`--container mkv`).
+
+Other things that are reported rather than lost quietly: HDR sources (converted to
+8-bit SDR without tone mapping, so colours look flat), camera data tracks such as
+GoPro telemetry (not copied), and subtitle tracks MP4 cannot hold.
 
 ## Installation
 
@@ -307,11 +346,15 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
   Text-subtitle keeping, MKV, and text burn-in are tested on real files.
 - h264 uses ffmpeg, not HandBrake, so HandBrake presets and DVD "main feature"
   selection are not available; rip discs with `dvd2iso` first.
+- Lyrics in MP3 are kept but not shown by most players (ffmpeg cannot write a real
+  lyrics frame). MusicBrainz identifiers are kept as custom text fields, not the
+  frames a tagger such as MusicBrainz Picard expects.
+- HEIC input was not tested with a real HEIC file (none could be created here), so
+  whether every HEIC tag carries over is unverified; JPEG, PNG and WebP are tested.
 - Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums,
   no Audible files, no per-chapter splitting, and no re-encoding of existing
   MP3s. The older tool stays until these are covered.
 - No job server, workers or `--queue` yet.
-- MP3 output does not copy cover art.
 - m4b needs every file in a book to be readable by ffmpeg and joins them
   re-encoded to AAC; it does not keep the original codec.
 - Animated images are converted from their first frame only.

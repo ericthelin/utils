@@ -8,10 +8,17 @@ import tempfile
 
 from .base import Recipe
 from ..jobs import Job
-from ..media import RecipeError, natural_key, probe, run_ffmpeg, safe_filename
+from ..media import (RecipeError, attached_pictures, format_tags, natural_key, probe, run_ffmpeg,
+                     safe_filename)
 
 BOOK_INPUTS = frozenset({".mp3", ".opus", ".m4a", ".ogg", ".flac", ".wav", ".aac"})
 DEFAULT_BITRATE = "32k"
+COVER_NAMES = ("cover", "folder", "front", "albumart", "album")
+COVER_EXTENSIONS = (".jpg", ".jpeg", ".png")
+# Book-level tags copied from the first file, under the name the MP4 tag format uses.
+# (MP4 has no publisher field. Language belongs to the audio track, not the file.)
+CARRIED_TAGS = {"date": "date", "year": "date", "comment": "comment", "description": "description",
+                "synopsis": "synopsis", "copyright": "copyright", "language": "language", "series": "show"}
 
 
 def clean_track_name(stem):
@@ -59,11 +66,41 @@ def chapters_metadata(chapters):
     return "\n".join(lines) + "\n"
 
 
-def file_tags(path):
-    tags = {k.lower(): v for k, v in probe(path).get("format", {}).get("tags", {}).items()}
-    return {"title": tags.get("album") or tags.get("title"),
-            "author": tags.get("album_artist") or tags.get("artist"),
-            "narrator": tags.get("narrator") or tags.get("composer")}
+def find_cover_image(folder):
+    """A cover.jpg, folder.png and the like sitting next to the audio files."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    for wanted in COVER_NAMES:
+        for name in sorted(names):
+            stem, extension = os.path.splitext(name)
+            if stem.lower() == wanted and extension.lower() in COVER_EXTENSIONS:
+                return os.path.join(folder, name)
+    return None
+
+
+def book_metadata(path, folder):
+    """Title, author, narrator, carried tags and a cover, read from the first file."""
+    info = probe(path)
+    tags = format_tags(info)
+    details = {"title": tags.get("album") or tags.get("title"),
+               "author": tags.get("album_artist") or tags.get("artist"),
+               "narrator": tags.get("narrator") or tags.get("composer"),
+               "carried": {}, "cover": None}
+    for source, name in CARRIED_TAGS.items():
+        if tags.get(source):
+            details["carried"].setdefault(name, tags[source])
+    pictures = attached_pictures(info)
+    if pictures:
+        details["cover"] = {"path": os.path.abspath(path), "stream": pictures[0]["index"],
+                            "codec": pictures[0].get("codec_name")}
+    else:
+        image = find_cover_image(folder)
+        if image:
+            details["cover"] = {"path": os.path.abspath(image), "stream": None,
+                                "codec": "png" if image.lower().endswith(".png") else "mjpeg"}
+    return details
 
 
 class M4b(Recipe):
@@ -123,8 +160,12 @@ class M4b(Recipe):
             else:
                 name, home = os.path.basename(os.path.dirname(os.path.abspath(paths[0]))), os.path.dirname(os.path.abspath(paths[0]))
             title, author, narrator = parse_book_name(name)
-            tags = file_tags(paths[0])
+            tags = book_metadata(paths[0], root or os.path.dirname(os.path.abspath(paths[0])))
             resolved = dict(options)
+            if tags["carried"]:
+                resolved["tags"] = tags["carried"]
+            if tags["cover"]:
+                resolved["cover"] = tags["cover"]
             resolved["title"] = options.get("title") or title or tags["title"]
             resolved["author"] = options.get("author") or author or tags["author"]
             narrator = options.get("narrator") or narrator or tags["narrator"]
@@ -156,10 +197,24 @@ class M4b(Recipe):
                     handle.write("file '%s'\n" % os.path.abspath(path).replace("'", "'\\''"))
             with open(metadata, "w", encoding="utf-8") as handle:
                 handle.write(chapters_metadata(chapters))
+            cover = options.get("cover")
             command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                       "-f", "concat", "-safe", "0", "-i", concat, "-i", metadata,
-                       "-map", "0:a:0", "-map_metadata", "1", "-codec:a", "aac",
-                       "-b:a", options.get("bitrate", DEFAULT_BITRATE)]
+                       "-f", "concat", "-safe", "0", "-i", concat, "-i", metadata]
+            if cover:
+                command += ["-i", cover["path"]]
+            command += ["-map", "0:a:0"]
+            if cover:
+                command += ["-map", f"2:{cover['stream']}" if cover["stream"] is not None else "2:v:0"]
+            command += ["-map_metadata", "1", "-codec:a", "aac", "-b:a", options.get("bitrate", DEFAULT_BITRATE)]
+            if cover:
+                codec = "copy" if cover.get("codec") in ("mjpeg", "png") else "mjpeg"
+                command += ["-c:v:0", codec, "-disposition:v:0", "attached_pic"]
+            for tag, value in sorted((options.get("tags") or {}).items()):
+                if tag == "language":
+                    if len(value) == 3:
+                        command += ["-metadata:s:a:0", f"language={value.lower()}"]
+                else:
+                    command += ["-metadata", f"{tag}={value}"]
             for key, tag in (("title", "title"), ("author", "artist"), ("author", "album_artist"),
                              ("narrator", "composer")):
                 if options.get(key):

@@ -70,6 +70,39 @@ def probe(path):
     return json.loads(done.stdout)
 
 
+def format_tags(info):
+    """The container's tags with lower-cased names."""
+    return {k.lower(): v for k, v in (info.get("format", {}).get("tags") or {}).items()}
+
+
+def attached_pictures(info):
+    """Cover pictures: image streams flagged as attached pictures."""
+    return [s for s in info.get("streams", [])
+            if s.get("codec_type") == "video" and (s.get("disposition") or {}).get("attached_pic")]
+
+
+def main_video(info):
+    """The first real video stream (not a cover picture), or None."""
+    for stream in info.get("streams", []):
+        if stream.get("codec_type") == "video" and not (stream.get("disposition") or {}).get("attached_pic"):
+            return stream
+    return None
+
+
+PICTURE_TYPES = {"mjpeg": (".jpg", "image/jpeg"), "png": (".png", "image/png"), "bmp": (".bmp", "image/bmp"),
+                 "gif": (".gif", "image/gif"), "webp": (".webp", "image/webp"), "tiff": (".tiff", "image/tiff")}
+
+
+def copy_times(inputs, output):
+    """Give the output the modification time of its newest source, so a photo or
+    video keeps its date in file managers and libraries."""
+    try:
+        newest = max(os.stat(path).st_mtime_ns for path in inputs)
+        os.utime(output, ns=(newest, newest))
+    except OSError:
+        pass
+
+
 def natural_key(text):
     """Sort key that orders 'track 2' before 'track 10'."""
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]

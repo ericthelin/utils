@@ -28,6 +28,8 @@ def add_common_arguments(parser):
     parser.add_argument("--force", action="store_true", help="overwrite outputs that already exist")
     parser.add_argument("--replace", action="store_true",
                         help="delete each source after its output is written (default: keep sources)")
+    parser.add_argument("--no-preserve-times", action="store_true",
+                        help="give outputs the current time (default: they keep their source's modification time)")
     parser.add_argument("-v", "--verbose", action="store_true", help="report every file, not just problems")
     parser.add_argument("--queue", action="store_true",
                         help="send to the job server instead of converting here (not available yet)")
@@ -102,6 +104,7 @@ def main(argv=None, prog=None, out=None):
     except Exception as error:
         print(f"{TOOL_NAME}: {error}", file=sys.stderr)
         return 1
-    policy = Policy(dry_run=args.dry_run, force=args.force, replace=args.replace, verbose=args.verbose)
+    policy = Policy(dry_run=args.dry_run, force=args.force, replace=args.replace, verbose=args.verbose,
+                    preserve_times=not args.no_preserve_times)
     counts = runner.run_jobs(recipe, jobs, policy, out)
     return 1 if counts["failed"] or problems else 0

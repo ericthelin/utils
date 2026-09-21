@@ -54,6 +54,18 @@ turns it into a live bar with an estimate. A worker will pass a callback that
 reports the same fraction to the server, so inline and queued runs share one code
 path.
 
+### Metadata
+
+The rule: nothing is lost silently. Every recipe either carries a piece of
+metadata across or returns a note saying it was left out and why. The rule came
+from measuring: files carrying rich tags, cover art, chapters, GPS and camera data
+were converted and compared field by field (with exiftool, MediaInfo and ffprobe)
+before deciding what each recipe had to do, and the tests keep real files of that
+kind and check the results. Two facts drove the design: MP4 cannot hold a cover
+picture and QuickTime-style custom tags together, and copying an MKV cover through
+ffmpeg leaves a bare video track unless it is extracted and re-attached. Every
+output also keeps its source's modification time.
+
 ### Subtitles (h264)
 
 MP4 holds only text subtitles, so the plan for each file depends on what is in it:

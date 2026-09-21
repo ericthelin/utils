@@ -19,7 +19,10 @@ sys.path.insert(0, TOOL_DIR)
 
 from to_medialib import cli, recipes, runner, sources  # noqa: E402
 from to_medialib.jobs import Job  # noqa: E402
-from to_medialib.media import natural_key, run_ffmpeg, safe_filename  # noqa: E402
+from to_medialib.media import (attached_pictures, copy_times, format_tags, main_video, natural_key,  # noqa: E402
+                               run_ffmpeg, safe_filename)
+from to_medialib.recipes import image as image_recipe  # noqa: E402
+from to_medialib.recipes import mp3 as mp3_recipe  # noqa: E402
 from to_medialib.recipes import h264  # noqa: E402
 from to_medialib.recipes import m4b  # noqa: E402
 from to_medialib.recipes.base import Recipe  # noqa: E402
@@ -28,6 +31,8 @@ from to_medialib.recipes.image import imagemagick  # noqa: E402
 ENTRY = os.path.join(TOOL_DIR, "to_media.py")
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 HAVE_MAGICK = imagemagick() is not None
+HAVE_EXIFTOOL = bool(shutil.which("exiftool"))
+HAVE_MEDIAINFO = bool(shutil.which("mediainfo"))
 
 
 def ffmpeg(*args):
@@ -128,12 +133,13 @@ class PlanningTests(TempDirTestCase):
         self.assertIs(recipes.get("jpeg"), recipes.get("jpg"))
 
     def test_mp3_options_reach_the_command(self):
+        info = {"streams": [{"index": 0, "codec_type": "audio"}]}
         job = Job("mp3", ["a.flac"], "a.mp3", {"audiobook": True})
-        command = recipes.get("mp3").command(job, "tmp.mp3")
+        command = recipes.get("mp3").build(job, "tmp.mp3", info)
         self.assertIn("-ac", command)
         self.assertEqual(command[command.index("-q:a") + 1], "8")
         job = Job("mp3", ["a.flac"], "a.mp3", {"bitrate": "192k"})
-        command = recipes.get("mp3").command(job, "tmp.mp3")
+        command = recipes.get("mp3").build(job, "tmp.mp3", info)
         self.assertIn("192k", command)
         self.assertNotIn("-q:a", command)
 
@@ -212,7 +218,8 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
 
-NO_SUBTITLES = {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]}
+NO_SUBTITLES = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"},
+                            {"index": 1, "codec_type": "audio", "codec_name": "aac"}]}
 
 
 def sub(codec, language=None, **extra):
@@ -222,8 +229,9 @@ def sub(codec, language=None, **extra):
     return dict(stream, **extra)
 
 
-def with_subs(*subs):
-    return {"streams": NO_SUBTITLES["streams"] + list(subs)}
+def with_subs(*subs, **info):
+    streams = [dict(s, index=number) for number, s in enumerate(NO_SUBTITLES["streams"] + list(subs))]
+    return dict({"streams": streams}, **info)
 
 
 class H264OptionTests(unittest.TestCase):
@@ -234,15 +242,15 @@ class H264OptionTests(unittest.TestCase):
 
     def test_default_is_the_balanced_profile(self):
         command = self.command()
-        self.assertEqual(command[command.index("-crf") + 1], "22")
-        self.assertEqual(command[command.index("-preset") + 1], "medium")
-        self.assertNotIn("-vf", command)
+        self.assertEqual(command[command.index("-crf:v:0") + 1], "22")
+        self.assertEqual(command[command.index("-preset:v:0") + 1], "medium")
+        self.assertNotIn("-filter:v:0", command)
 
     def test_profile_sets_defaults_and_options_override_them(self):
         command = self.command(profile="fast720", crf=30)
-        self.assertEqual(command[command.index("-crf") + 1], "30")
-        self.assertEqual(command[command.index("-preset") + 1], "veryfast")
-        self.assertIn("min(ih,720)", command[command.index("-vf") + 1])
+        self.assertEqual(command[command.index("-crf:v:0") + 1], "30")
+        self.assertEqual(command[command.index("-preset:v:0") + 1], "veryfast")
+        self.assertIn("min(ih,720)", command[command.index("-filter:v:0") + 1])
 
     def test_chapters_metadata_and_all_audio_are_mapped(self):
         command = self.command()
@@ -252,12 +260,12 @@ class H264OptionTests(unittest.TestCase):
     def test_nvenc_uses_the_gpu_encoder(self):
         command = self.command(encoder="nvenc", crf=25)
         self.assertIn("h264_nvenc", command)
-        self.assertEqual(command[command.index("-cq") + 1], "25")
+        self.assertEqual(command[command.index("-cq:v:0") + 1], "25")
         self.assertNotIn("libx264", command)
 
     def test_deinterlace_comes_before_scaling(self):
         chain = self.command(deinterlace=True, max_height=480)
-        self.assertTrue(chain[chain.index("-vf") + 1].startswith("yadif,scale"))
+        self.assertTrue(chain[chain.index("-filter:v:0") + 1].startswith("yadif,scale"))
 
     def test_mp4_files_found_in_folders_are_not_reencoded_over_themselves(self):
         self.assertNotIn(".mp4", self.recipe.input_exts)
@@ -279,7 +287,7 @@ class SubtitlePlanTests(unittest.TestCase):
 
     def test_text_subtitles_are_kept_as_mov_text_in_mp4(self):
         plan = self.plan(with_subs(sub("subrip", "eng"), sub("ass", "fra")))
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s:0", "0:s:1"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?", "0:s:0", "0:s:1"])
         self.assertEqual(plan.argv[plan.argv.index("-c:s") + 1], "mov_text")
         self.assertEqual((plan.soft_subtitles, plan.notes), (2, []))
 
@@ -288,7 +296,7 @@ class SubtitlePlanTests(unittest.TestCase):
 
     def test_image_subtitles_are_left_out_with_a_note_that_says_what_to_do(self):
         plan = self.plan(with_subs(sub("hdmv_pgs_subtitle", "eng")))
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?"])
         self.assertEqual(plan.soft_subtitles, 0)
         self.assertEqual(len(plan.notes), 1)
         for expected in ("image subtitle", "hdmv_pgs_subtitle", "--burn-subtitles", "--container mkv"):
@@ -296,18 +304,18 @@ class SubtitlePlanTests(unittest.TestCase):
 
     def test_mixed_tracks_keep_the_text_ones_and_report_the_rest(self):
         plan = self.plan(with_subs(sub("subrip", "eng"), sub("dvd_subtitle", "eng"), sub("eia_608")))
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s:0"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?", "0:s:0"])
         self.assertEqual(len(plan.notes), 2)
         self.assertIn("unsupported format", plan.notes[1])
 
     def test_subtitles_none_drops_them_quietly(self):
         plan = self.plan(with_subs(sub("subrip", "eng"), sub("hdmv_pgs_subtitle")), subtitles="none")
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?"])
         self.assertEqual(plan.notes, [])
 
     def test_mkv_keeps_every_subtitle_track_and_the_fonts(self):
         plan = self.plan(with_subs(sub("subrip", "eng"), sub("hdmv_pgs_subtitle")), container="mkv")
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s?", "0:t?"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?", "0:s?", "0:t?"])
         self.assertEqual(plan.argv[plan.argv.index("-c:s") + 1], "copy")
         self.assertEqual(plan.argv[plan.argv.index("-f") + 1], "matroska")
         self.assertEqual(plan.notes, [])
@@ -321,29 +329,34 @@ class SubtitlePlanTests(unittest.TestCase):
 
     def test_burning_a_text_track_uses_the_subtitles_filter_and_drops_soft_tracks(self):
         plan = self.plan(with_subs(sub("subrip", "eng"), sub("subrip", "fra")), burn_subtitles="fra")
-        chain = plan.argv[plan.argv.index("-vf") + 1]
+        chain = plan.argv[plan.argv.index("-filter:v:0") + 1]
         self.assertEqual(chain, "subtitles=source.mkv:si=1")
         self.assertEqual(plan.links, {"source.mkv": os.path.abspath("in.mkv")})
-        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?"])
         self.assertNotIn("mov_text", plan.argv)
 
     def test_burning_by_number_and_the_default_is_the_first_track(self):
         subs = with_subs(sub("subrip", "eng"), sub("subrip", "fra"))
-        self.assertIn("si=0", self.plan(subs, burn_subtitles="0").argv[self.plan(subs, burn_subtitles="0").argv.index("-vf") + 1])
-        self.assertIn("si=1", self.plan(subs, burn_subtitles="1").argv[self.plan(subs, burn_subtitles="1").argv.index("-vf") + 1])
+
+        def chain(track):
+            argv = self.plan(subs, burn_subtitles=track).argv
+            return argv[argv.index("-filter:v:0") + 1]
+
+        self.assertIn("si=0", chain("0"))
+        self.assertIn("si=1", chain("1"))
 
     def test_burning_an_image_track_overlays_it_before_scaling(self):
         plan = self.plan(with_subs(sub("hdmv_pgs_subtitle", "eng")), burn_subtitles="eng", max_height=480)
         graph = plan.argv[plan.argv.index("-filter_complex") + 1]
-        self.assertTrue(graph.startswith("[0:v:0][0:s:0]overlay[ov];[ov]"))
+        self.assertTrue(graph.startswith("[0:0][0:s:0]overlay[ov];[ov]"))
         self.assertIn("min(ih,480)", graph)
-        self.assertNotIn("-vf", plan.argv)
+        self.assertNotIn("-filter:v:0", plan.argv)
         self.assertEqual(self.maps(plan)[0], "[v]")
         self.assertEqual(plan.links, {})
 
     def test_burning_an_image_track_without_scaling_maps_the_overlay(self):
         plan = self.plan(with_subs(sub("dvd_subtitle", "eng")), burn_subtitles="0")
-        self.assertEqual(plan.argv[plan.argv.index("-filter_complex") + 1], "[0:v:0][0:s:0]overlay[ov]")
+        self.assertEqual(plan.argv[plan.argv.index("-filter_complex") + 1], "[0:0][0:s:0]overlay[ov]")
         self.assertEqual(self.maps(plan)[0], "[ov]")
 
     def test_language_matching_accepts_two_and_three_letter_codes(self):
@@ -364,7 +377,7 @@ class SubtitlePlanTests(unittest.TestCase):
 
     def test_burning_combines_with_deinterlace_before_scaling(self):
         plan = self.plan(with_subs(sub("subrip", "eng")), burn_subtitles="0", deinterlace=True, max_height=360)
-        chain = plan.argv[plan.argv.index("-vf") + 1]
+        chain = plan.argv[plan.argv.index("-filter:v:0") + 1]
         self.assertTrue(chain.startswith("yadif,subtitles=source.mkv:si=0,scale="))
 
     def test_describe_lists_the_command_and_the_notes(self):
@@ -431,6 +444,191 @@ class RunnerNotesTests(TempDirTestCase):
         status, detail = runner.run_one(Unreadable(), Job("fake", [src], self.path("a.out")),
                                         runner.Policy(dry_run=True))
         self.assertEqual((status, detail), ("failed", "ffprobe could not read x"))
+
+
+def cover(index=2, codec="mjpeg", **tags):
+    return {"index": index, "codec_type": "video", "codec_name": codec, "disposition": {"attached_pic": 1},
+            "tags": tags}
+
+
+class MetadataHelperTests(TempDirTestCase):
+    def test_id3_fixes_merge_track_and_disc_totals(self):
+        fixes = dict(mp3_recipe.id3_tag_fixes({"track": "3", "tracktotal": "12", "disc": "1", "disctotal": "2"}))
+        self.assertEqual(fixes["track"], "3/12")
+        self.assertEqual(fixes["disc"], "1/2")
+        self.assertEqual((fixes["tracktotal"], fixes["disctotal"]), ("", ""))
+
+    def test_id3_fixes_leave_an_already_merged_number_alone(self):
+        self.assertEqual(mp3_recipe.id3_tag_fixes({"track": "3/12", "tracktotal": "12"}), [])
+        self.assertEqual(mp3_recipe.id3_tag_fixes({"track": "3"}), [])
+
+    def test_id3_fixes_understand_other_field_names(self):
+        fixes = dict(mp3_recipe.id3_tag_fixes({"tracknumber": "3", "totaltracks": "9"}))
+        self.assertEqual((fixes["track"], fixes["tracknumber"], fixes["totaltracks"]), ("3/9", "", ""))
+
+    def test_id3_fixes_use_real_frame_names_for_isrc_and_bpm(self):
+        fixes = dict(mp3_recipe.id3_tag_fixes({"isrc": "USRC1", "bpm": "128", "title": "x"}))
+        self.assertEqual((fixes["TSRC"], fixes["TBPM"], fixes["isrc"], fixes["bpm"]), ("USRC1", "128", "", ""))
+        self.assertEqual(mp3_recipe.id3_tag_fixes({"tsrc": "x", "isrc": "y"}), [])
+
+    def test_tags_are_lower_cased_and_missing_ones_tolerated(self):
+        self.assertEqual(format_tags({"format": {"tags": {"TITLE": "A", "Artist": "B"}}}), {"title": "A", "artist": "B"})
+        self.assertEqual(format_tags({}), {})
+
+    def test_covers_are_told_apart_from_the_real_video(self):
+        info = {"streams": [cover(0), {"index": 1, "codec_type": "video"}, {"index": 2, "codec_type": "audio"}]}
+        self.assertEqual([p["index"] for p in attached_pictures(info)], [0])
+        self.assertEqual(main_video(info)["index"], 1)
+        self.assertIsNone(main_video({"streams": [cover(0)]}))
+
+    def test_copy_times_uses_the_newest_source(self):
+        old, new, out = self.touch("old"), self.touch("new"), self.touch("out")
+        os.utime(old, (1_000_000_000, 1_000_000_000))
+        os.utime(new, (1_500_000_000, 1_500_000_000))
+        copy_times([old, new], out)
+        self.assertEqual(int(os.stat(out).st_mtime), 1_500_000_000)
+
+    def test_copy_times_ignores_a_missing_file(self):
+        copy_times([self.path("gone")], self.touch("out"))
+
+    def test_the_runner_keeps_the_source_time_unless_told_not_to(self):
+        src = self.touch("a.src")
+        os.utime(src, (1_200_000_000, 1_200_000_000))
+        job = Job("fake", [src], self.path("a.out"))
+        runner.run_one(FakeRecipe(), job, runner.Policy())
+        self.assertEqual(int(os.stat(job.output).st_mtime), 1_200_000_000)
+        again = Job("fake", [src], self.path("b.out"))
+        runner.run_one(FakeRecipe(), again, runner.Policy(preserve_times=False))
+        self.assertGreater(int(os.stat(again.output).st_mtime), 1_200_000_000)
+
+    def test_cover_image_files_are_found_by_name(self):
+        self.touch("book", "notes.txt")
+        self.assertIsNone(m4b.find_cover_image(self.path("book")))
+        self.touch("book", "Folder.PNG")
+        self.assertEqual(os.path.basename(m4b.find_cover_image(self.path("book"))), "Folder.PNG")
+        self.touch("book", "cover.jpg")
+        self.assertEqual(os.path.basename(m4b.find_cover_image(self.path("book"))), "cover.jpg")
+
+    def test_webp_says_when_it_cannot_keep_iptc(self):
+        recipe = recipes.get("webp")
+        original = image_recipe.source_profiles
+        try:
+            image_recipe.source_profiles = lambda path: {"exif", "iptc"}
+            notes = recipe.notes(Job("webp", ["a.jpg"], "a.webp", {}))
+            self.assertEqual(len(notes), 1)
+            self.assertIn("IPTC", notes[0])
+            self.assertIn("use jpg or png", notes[0])
+            self.assertEqual(recipe.notes(Job("webp", ["a.jpg"], "a.webp", {"strip": True})), [])
+            self.assertEqual(recipes.get("jpg").notes(Job("jpg", ["a.png"], "a.jpg", {})), [])
+            image_recipe.source_profiles = lambda path: {"exif"}
+            self.assertEqual(recipe.notes(Job("webp", ["a.jpg"], "a.webp", {})), [])
+        finally:
+            image_recipe.source_profiles = original
+
+
+class H264MetadataPlanTests(unittest.TestCase):
+    recipe = recipes.get("h264")
+
+    def info(self, pictures=(), tags=None, extra_streams=(), video=None):
+        streams = [dict({"index": 0, "codec_type": "video", "codec_name": "h264"}, **(video or {})),
+                   {"index": 1, "codec_type": "audio", "codec_name": "aac"}]
+        streams += list(pictures) + list(extra_streams)
+        return {"streams": streams, "format": {"tags": tags or {}}}
+
+    def plan(self, info, **options):
+        return self.recipe.build(Job("h264", ["in.mkv"], "out.mp4", options), "tmp.mp4", info)
+
+    def maps(self, plan):
+        return [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "-map"]
+
+    def test_the_real_video_is_mapped_even_when_a_cover_comes_first(self):
+        info = {"streams": [cover(0), {"index": 1, "codec_type": "video", "codec_name": "h264"},
+                            {"index": 2, "codec_type": "audio"}], "format": {}}
+        plan = self.plan(info)
+        self.assertEqual(self.maps(plan)[0], "0:1")
+        self.assertIn("0:0", self.maps(plan))
+
+    def test_covers_are_kept_in_an_mp4_as_attached_pictures(self):
+        plan = self.plan(self.info(pictures=[cover(2)]))
+        self.assertEqual(self.maps(plan), ["0:0", "0:a?", "0:2"])
+        self.assertEqual(plan.argv[plan.argv.index("-c:v:1") + 1], "copy")
+        self.assertEqual(plan.argv[plan.argv.index("-disposition:v:1") + 1], "attached_pic")
+
+    def test_a_cover_ffmpeg_cannot_copy_into_mp4_becomes_jpeg(self):
+        plan = self.plan(self.info(pictures=[cover(2, codec="webp")]))
+        self.assertEqual(plan.argv[plan.argv.index("-c:v:1") + 1], "mjpeg")
+
+    def test_standard_tags_need_no_special_handling(self):
+        plan = self.plan(self.info(tags={"title": "T", "genre": "G", "creation_time": "x", "encoder": "y"}))
+        self.assertNotIn("use_metadata_tags", plan.argv[plan.argv.index("-movflags") + 1])
+        self.assertEqual(plan.notes, [])
+
+    def test_extra_tags_without_a_cover_use_quicktime_metadata_and_say_so(self):
+        plan = self.plan(self.info(tags={"title": "T", "com.apple.quicktime.location.iso6709": "+1+2/"}))
+        self.assertIn("use_metadata_tags", plan.argv[plan.argv.index("-movflags") + 1])
+        self.assertEqual(len(plan.notes), 1)
+        self.assertIn("com.apple.quicktime.location.iso6709", plan.notes[0])
+        self.assertIn("QuickTime metadata", plan.notes[0])
+
+    def test_extra_tags_with_a_cover_keep_the_cover_and_report_the_tags_left_out(self):
+        plan = self.plan(self.info(pictures=[cover(2)], tags={"actor": "A", "director": "D"}))
+        self.assertNotIn("use_metadata_tags", plan.argv[plan.argv.index("-movflags") + 1])
+        self.assertIn("0:2", self.maps(plan))
+        self.assertEqual(len(plan.notes), 1)
+        for expected in ("actor", "director", "cover picture", "were left out", "--container mkv", "--tags all"):
+            self.assertIn(expected, plan.notes[0])
+
+    def test_tags_all_keeps_the_tags_and_says_the_cover_was_dropped(self):
+        plan = self.plan(self.info(pictures=[cover(2)], tags={"actor": "A"}), tags="all")
+        self.assertIn("use_metadata_tags", plan.argv[plan.argv.index("-movflags") + 1])
+        self.assertNotIn("0:2", self.maps(plan))
+        self.assertNotIn("-c:v:1", plan.argv)
+        self.assertEqual(len(plan.notes), 2)
+        self.assertIn("cover picture(s) cannot be stored alongside QuickTime metadata", plan.notes[1])
+
+    def test_tags_standard_keeps_the_cover_and_stays_quiet(self):
+        plan = self.plan(self.info(pictures=[cover(2)], tags={"actor": "A"}), tags="standard")
+        self.assertIn("0:2", self.maps(plan))
+        self.assertNotIn("use_metadata_tags", plan.argv[plan.argv.index("-movflags") + 1])
+        self.assertEqual(plan.notes, [])
+
+    def test_mkv_keeps_every_tag_with_no_notes_and_no_quicktime_flag(self):
+        plan = self.plan(self.info(tags={"actor": "A"}), container="mkv")
+        self.assertEqual(plan.notes, [])
+        self.assertNotIn("use_metadata_tags", " ".join(plan.argv))
+
+    def test_mkv_covers_are_extracted_and_attached_not_mapped_as_video(self):
+        plan = self.plan(self.info(pictures=[cover(2, filename="poster.jpg", mimetype="image/jpeg")]),
+                         container="mkv")
+        self.assertNotIn("0:2", self.maps(plan))
+        self.assertEqual(plan.covers[0]["index"], 2)
+        self.assertEqual(plan.argv[plan.argv.index("-attach") + 1], "<cover:0>")
+        self.assertIn("filename=poster.jpg", plan.argv)
+        self.assertIn("mimetype=image/jpeg", plan.argv)
+        self.assertIn("-metadata:s:t:0", plan.argv)
+
+    def test_mkv_cover_slots_come_after_the_fonts_that_are_copied(self):
+        fonts = [{"index": 3, "codec_type": "attachment"}, {"index": 4, "codec_type": "attachment"}]
+        plan = self.plan(self.info(pictures=[cover(2)], extra_streams=fonts), container="mkv")
+        self.assertIn("-metadata:s:t:2", plan.argv)
+
+    def test_mkv_attachments_are_kept_even_when_there_are_no_subtitles(self):
+        self.assertIn("0:t?", self.maps(self.plan(self.info(), container="mkv")))
+        self.assertNotIn("0:t?", self.maps(self.plan(self.info(), container="mkv", subtitles="none")))
+
+    def test_hdr_sources_get_a_note(self):
+        plan = self.plan(self.info(video={"color_transfer": "smpte2084"}))
+        self.assertEqual(len(plan.notes), 1)
+        self.assertIn("HDR", plan.notes[0])
+        self.assertEqual(self.plan(self.info(video={"color_transfer": "bt709"})).notes, [])
+
+    def test_camera_data_tracks_are_reported(self):
+        data = [{"index": 3, "codec_type": "data", "codec_tag_string": "gpmd"},
+                {"index": 4, "codec_type": "data", "codec_tag_string": "text"}]
+        plan = self.plan(self.info(extra_streams=data))
+        self.assertEqual(len(plan.notes), 1)
+        self.assertIn("gpmd", plan.notes[0])
+        self.assertNotIn("text", plan.notes[0])
 
 
 class FakeRecipe(Recipe):
@@ -819,6 +1017,307 @@ class VideoConversionTests(TempDirTestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         video = [s for s in self.streams(self.path("gpu.mp4"))["streams"] if s["codec_type"] == "video"][0]
         self.assertEqual(video["codec_name"], "h264")
+
+
+def tags_of(path):
+    return {k.lower(): v for k, v in
+            ffprobe_json(path, "-show_format")["format"].get("tags", {}).items()}
+
+
+def stream_kinds(path):
+    return [(s["codec_type"], s["codec_name"], bool(s.get("disposition", {}).get("attached_pic")))
+            for s in ffprobe_json(path, "-show_streams", "-show_entries",
+                                  "stream=index,codec_type,codec_name:stream_disposition=attached_pic")["streams"]]
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not installed")
+class MetadataPreservationTests(TempDirTestCase):
+    """Real files carrying real metadata, converted and compared."""
+
+    def run_cli(self, *argv):
+        return subprocess.run([sys.executable, ENTRY, *argv], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+
+    def make_cover(self, name="cover.jpg"):
+        target = self.path(name)
+        ffmpeg("-f", "lavfi", "-i", "color=c=red:s=96x96", "-frames:v", "1", target)
+        return target
+
+    def has_cover(self, path):
+        return any(pic for _, _, pic in stream_kinds(path))
+
+    # audio ----------------------------------------------------------------
+
+    def make_flac(self, cover=True):
+        target = self.path("song.flac")
+        args = ["-f", "lavfi", "-i", "sine=d=1"]
+        maps = ["-map", "0"]
+        if cover:
+            args += ["-i", self.make_cover()]
+            maps += ["-map", "1"]
+        meta = {"title": "Test Song", "artist": "Some Band", "album": "The Album", "album_artist": "Various",
+                "composer": "J. Composer", "genre": "Rock", "date": "2019", "track": "3", "tracktotal": "12",
+                "disc": "1", "disctotal": "2", "isrc": "USRC17607839", "bpm": "128", "copyright": "(c) X",
+                "publisher": "Big Label", "custom_field": "my custom value"}
+        flags = sum((["-metadata", f"{k}={v}"] for k, v in meta.items()), [])
+        extra = ["-c:v", "copy", "-disposition:v", "attached_pic"] if cover else []
+        ffmpeg(*args, *maps, "-c:a", "flac", *extra, *flags, target)
+        os.utime(target, (1_425_463_872, 1_425_463_872))
+        return target
+
+    def test_flac_to_mp3_keeps_the_tags_the_cover_and_the_date(self):
+        src = self.make_flac()
+        done = self.run_cli("mp3", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        out = self.path("song.mp3")
+        tags = tags_of(out)
+        for name, value in (("title", "Test Song"), ("artist", "Some Band"), ("album", "The Album"),
+                            ("album_artist", "Various"), ("composer", "J. Composer"), ("genre", "Rock"),
+                            ("copyright", "(c) X"), ("publisher", "Big Label")):
+            self.assertEqual(tags.get(name), value, name)
+        self.assertEqual(tags["track"], "3/12")
+        self.assertEqual(tags["disc"], "1/2")
+        self.assertEqual(tags["tsrc"], "USRC17607839")
+        self.assertEqual(tags["tbpm"], "128")
+        self.assertEqual(tags["custom_field"], "my custom value")
+        for stray in ("tracktotal", "disctotal", "isrc", "bpm"):
+            self.assertNotIn(stray, tags)
+        self.assertTrue(self.has_cover(out), "the cover picture must be carried over")
+        self.assertEqual(int(os.stat(out).st_mtime), 1_425_463_872)
+
+    def test_a_file_without_a_cover_gets_none_invented(self):
+        src = self.make_flac(cover=False)
+        self.assertEqual(self.run_cli("mp3", src).returncode, 0)
+        self.assertFalse(self.has_cover(self.path("song.mp3")))
+
+    def test_no_preserve_times_uses_the_current_time(self):
+        src = self.make_flac(cover=False)
+        self.run_cli("mp3", "--no-preserve-times", src)
+        self.assertGreater(int(os.stat(self.path("song.mp3")).st_mtime), 1_500_000_000)
+
+    # video ----------------------------------------------------------------
+
+    def make_mkv(self, cover=True):
+        target = self.path("movie.mkv")
+        chapters = self.touch("ch.txt", text=";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\n"
+                              "title=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Two\n")
+        args = ["-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2", "-f", "lavfi", "-i", "sine=d=2", "-i", chapters]
+        meta = {"title": "My Movie", "description": "A long synopsis.", "genre": "Drama", "actor": "Someone",
+                "director": "A. Director", "custom_tag": "kept?"}
+        flags = sum((["-metadata", f"{k}={v}"] for k, v in meta.items()), [])
+        stream_meta = ["-metadata:s:a:0", "title=Director commentary", "-metadata:s:a:0", "language=eng"]
+        attach = []
+        if cover:
+            attach = ["-attach", self.make_cover(), "-metadata:s:t", "mimetype=image/jpeg",
+                      "-metadata:s:t", "filename=cover.jpg"]
+        ffmpeg(*args, "-map", "0", "-map", "1", "-map_metadata", "2", "-c:v", "libx264", "-c:a", "aac",
+               *flags, *stream_meta, *attach, target)
+        os.utime(target, (1_404_201_600, 1_404_201_600))
+        return target
+
+    def test_mkv_output_keeps_everything(self):
+        src = self.make_mkv()
+        done = self.run_cli("h264", "--container", "mkv", "--out", self.path("out"), src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        out = self.path("out", "movie.mkv")
+        tags = tags_of(out)
+        for name, value in (("title", "My Movie"), ("actor", "Someone"), ("director", "A. Director"),
+                            ("custom_tag", "kept?"), ("description", "A long synopsis.")):
+            self.assertEqual(tags.get(name), value, name)
+        self.assertTrue(self.has_cover(out), "the cover attachment must survive")
+        info = ffprobe_json(out, "-show_streams", "-show_chapters")
+        self.assertEqual([c["tags"]["title"] for c in info["chapters"]], ["One", "Two"])
+        audio = [s for s in info["streams"] if s["codec_type"] == "audio"][0]
+        self.assertEqual(audio["tags"]["title"], "Director commentary")
+        self.assertEqual(int(os.stat(out).st_mtime), 1_404_201_600)
+        self.assertNotIn("note:", done.stdout)
+
+    def test_mkv_keeps_embedded_fonts_with_styled_subtitles_and_drops_them_with_the_subtitles(self):
+        ass = self.touch("s.ass", text="[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+                         "Style: Default,Custom Font,24\n[Events]\nFormat: Layer, Start, End, Style, Text\n"
+                         "Dialogue: 0,0:00:00.00,0:00:02.00,Default,Styled\n")
+        font = self.touch("custom.ttf", text="not a real font, just bytes")
+        src = self.path("styled.mkv")
+        ffmpeg("-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2", "-i", ass, "-map", "0", "-map", "1",
+               "-c:v", "libx264", "-c:s", "ass", "-attach", font, "-metadata:s:t", "mimetype=application/x-truetype-font", src)
+        self.assertEqual(self.run_cli("h264", "--container", "mkv", "--out", self.path("kept"), src).returncode, 0)
+        kept = ffprobe_json(self.path("kept", "styled.mkv"), "-show_streams")["streams"]
+        fonts = [s for s in kept if s["codec_type"] == "attachment"]
+        self.assertEqual([f["tags"]["filename"] for f in fonts], ["custom.ttf"])
+        self.assertEqual(fonts[0]["tags"]["mimetype"], "application/x-truetype-font")
+        self.assertEqual(self.run_cli("h264", "--container", "mkv", "--subtitles", "none", "--out",
+                                      self.path("dropped"), src).returncode, 0)
+        dropped = ffprobe_json(self.path("dropped", "styled.mkv"), "-show_streams")["streams"]
+        self.assertEqual([s["codec_type"] for s in dropped if s["codec_type"] in ("attachment", "subtitle")], [])
+
+    def test_mp4_auto_keeps_the_cover_and_standard_tags_and_reports_the_extras(self):
+        src = self.make_mkv()
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        out = self.path("movie.mp4")
+        tags = tags_of(out)
+        self.assertEqual((tags["title"], tags["genre"], tags["description"]), ("My Movie", "Drama", "A long synopsis."))
+        self.assertTrue(self.has_cover(out))
+        self.assertNotIn("actor", tags)
+        self.assertIn("actor", done.stdout)
+        self.assertIn("were left out", done.stdout)
+        self.assertEqual(int(os.stat(out).st_mtime), 1_404_201_600)
+
+    def test_mp4_tags_all_keeps_every_tag_and_reports_the_lost_cover(self):
+        src = self.make_mkv()
+        done = self.run_cli("h264", "--tags", "all", "--out", self.path("all"), src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        out = self.path("all", "movie.mp4")
+        tags = tags_of(out)
+        self.assertEqual((tags["actor"], tags["director"], tags["custom_tag"]), ("Someone", "A. Director", "kept?"))
+        self.assertFalse(self.has_cover(out))
+        self.assertIn("cover picture(s) cannot be stored alongside QuickTime metadata", done.stdout)
+
+    def test_mp4_with_no_cover_keeps_all_tags_automatically(self):
+        src = self.make_mkv(cover=False)
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(tags_of(self.path("movie.mp4"))["custom_tag"], "kept?")
+        self.assertIn("QuickTime metadata", done.stdout)
+
+    def test_chapters_survive_into_the_mp4(self):
+        src = self.make_mkv()
+        self.run_cli("h264", src)
+        chapters = ffprobe_json(self.path("movie.mp4"), "-show_chapters")["chapters"]
+        self.assertEqual([c["tags"]["title"] for c in chapters], ["One", "Two"])
+
+    @unittest.skipUnless(HAVE_MEDIAINFO, "mediainfo not installed (MP4 track titles are not visible to ffprobe)")
+    def test_mp4_keeps_track_titles(self):
+        src = self.make_mkv(cover=False)
+        self.run_cli("h264", src)
+        done = subprocess.run(["mediainfo", "--Inform=Audio;%Title%", self.path("movie.mp4")],
+                              capture_output=True, text=True)
+        self.assertIn("Director commentary", done.stdout)
+
+    def test_iphone_style_quicktime_tags_survive_into_the_mp4(self):
+        src = self.path("phone.mov")
+        ffmpeg("-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2", "-f", "lavfi", "-i", "sine=d=2",
+               "-c:v", "libx264", "-c:a", "aac", "-movflags", "use_metadata_tags",
+               "-metadata", "com.apple.quicktime.location.ISO6709=+37.3349-122.0090+025.000/",
+               "-metadata", "com.apple.quicktime.make=Apple", "-metadata", "com.apple.quicktime.model=iPhone 14 Pro",
+               "-metadata", "com.apple.quicktime.creationdate=2019-06-15T10:30:00-0700", src)
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        tags = tags_of(self.path("phone.mp4"))
+        self.assertEqual(tags["com.apple.quicktime.location.iso6709"], "+37.3349-122.0090+025.000/")
+        self.assertEqual(tags["com.apple.quicktime.make"], "Apple")
+        self.assertEqual(tags["com.apple.quicktime.model"], "iPhone 14 Pro")
+        self.assertEqual(tags["com.apple.quicktime.creationdate"], "2019-06-15T10:30:00-0700")
+
+    def test_the_recording_date_survives(self):
+        src = self.path("dated.mkv")
+        ffmpeg("-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=1", "-c:v", "libx264",
+               "-metadata", "creation_time=2019-06-15T10:30:00Z", src)
+        self.run_cli("h264", src)
+        self.assertTrue(tags_of(self.path("dated.mp4"))["creation_time"].startswith("2019-06-15T10:30:00"))
+
+    # audiobooks ------------------------------------------------------------
+
+    def make_book(self, embedded_cover=True, folder_image=False):
+        book = self.path("Jane Doe - Sample Book (Bob Reader)")
+        os.makedirs(book)
+        meta = ["-metadata", "album=Sample Book", "-metadata", "artist=Jane Doe", "-metadata", "date=2018",
+                "-metadata", "comment=A great listen", "-metadata", "copyright=(c) 2018 Jane",
+                "-metadata", "language=eng"]
+        args = ["-f", "lavfi", "-i", "sine=frequency=400:d=1"]
+        maps = ["-map", "0"]
+        extra = []
+        if embedded_cover:
+            args += ["-i", self.make_cover()]
+            maps += ["-map", "1"]
+            extra = ["-c:v", "copy", "-disposition:v", "attached_pic"]
+        ffmpeg(*args, *maps, "-c:a", "libmp3lame", *extra, "-id3v2_version", "3", *meta,
+               os.path.join(book, "1 - One.mp3"))
+        ffmpeg("-f", "lavfi", "-i", "sine=frequency=500:d=1", "-c:a", "libmp3lame", os.path.join(book, "2 - Two.mp3"))
+        if folder_image:
+            shutil.copy(self.make_cover("folder.jpg"), os.path.join(book, "folder.jpg"))
+        for name in os.listdir(book):
+            os.utime(os.path.join(book, name), (1_525_510_800, 1_525_510_800))
+        return book
+
+    def test_an_audiobook_keeps_the_cover_the_book_tags_and_the_date(self):
+        book = self.make_book()
+        done = self.run_cli("m4b", "--out", self.path("out"), book)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        out = self.path("out", "Jane Doe - Sample Book.m4b")
+        tags = tags_of(out)
+        self.assertEqual((tags["date"], tags["comment"], tags["copyright"]), ("2018", "A great listen", "(c) 2018 Jane"))
+        self.assertEqual((tags["title"], tags["artist"], tags["composer"]), ("Sample Book", "Jane Doe", "Bob Reader"))
+        self.assertTrue(self.has_cover(out))
+        audio = [s for s in ffprobe_json(out, "-show_streams")["streams"] if s["codec_type"] == "audio"][0]
+        self.assertEqual(audio["tags"]["language"], "eng")
+        self.assertEqual(int(os.stat(out).st_mtime), 1_525_510_800)
+
+    def test_an_audiobook_uses_a_folder_image_when_no_cover_is_embedded(self):
+        book = self.make_book(embedded_cover=False, folder_image=True)
+        self.assertEqual(self.run_cli("m4b", "--out", self.path("out"), book).returncode, 0)
+        self.assertTrue(self.has_cover(self.path("out", "Jane Doe - Sample Book.m4b")))
+
+    def test_an_audiobook_without_any_cover_gets_none(self):
+        book = self.make_book(embedded_cover=False)
+        self.assertEqual(self.run_cli("m4b", "--out", self.path("out"), book).returncode, 0)
+        self.assertFalse(self.has_cover(self.path("out", "Jane Doe - Sample Book.m4b")))
+
+
+@unittest.skipUnless(HAVE_MAGICK and HAVE_EXIFTOOL, "ImageMagick and exiftool are needed")
+class ImageMetadataTests(TempDirTestCase):
+    """A photo with camera, GPS, XMP and IPTC data, converted to each format."""
+
+    WANTED = ("Make", "Model", "DateTimeOriginal", "Artist", "Copyright", "ImageDescription",
+              "GPSLatitude", "GPSLongitude", "Title", "Creator", "Rating")
+
+    def make_photo(self):
+        target = self.path("photo.jpg")
+        subprocess.run(imagemagick() + ["-size", "60x40", "gradient:orange-blue", target], check=True)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-Make=Canon", "-Model=EOS R5",
+                        "-DateTimeOriginal=2019:06:15 10:30:00", "-Artist=Jane", "-Copyright=(c) 2019 Jane",
+                        "-ImageDescription=A nice view", "-GPSLatitude=37.3349", "-GPSLatitudeRef=N",
+                        "-GPSLongitude=122.0090", "-GPSLongitudeRef=W", "-XMP-dc:Title=XMP Title",
+                        "-XMP-dc:Creator=Jane", "-XMP-xmp:Rating=5", "-IPTC:Keywords=holiday",
+                        "-IPTC:Caption-Abstract=IPTC caption", "-Orientation=6", "-n", target], check=True)
+        os.utime(target, (1_560_594_600, 1_560_594_600))
+        return target
+
+    def names_in(self, path):
+        done = subprocess.run(["exiftool", "-a", "-G0", "-j", path], capture_output=True, text=True)
+        return {key.split(":", 1)[1] for key in json.loads(done.stdout)[0] if ":" in key}
+
+    def convert(self, fmt, *extra):
+        return subprocess.run([sys.executable, ENTRY, fmt, "--out", self.path(fmt), *extra, self.path("photo.jpg")],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    def test_jpg_and_png_keep_all_the_photo_metadata_and_the_date(self):
+        self.make_photo()
+        for fmt in ("jpg", "png"):
+            done = self.convert(fmt)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            out = self.path(fmt, f"photo.{fmt}")
+            present = self.names_in(out)
+            missing = [name for name in self.WANTED + ("Keywords", "Caption-Abstract") if name not in present]
+            self.assertEqual(missing, [], f"{fmt} lost {missing}")
+            self.assertEqual(int(os.stat(out).st_mtime), 1_560_594_600)
+            self.assertNotIn("note:", done.stdout)
+
+    def test_webp_keeps_exif_and_xmp_and_reports_that_iptc_was_left_out(self):
+        self.make_photo()
+        done = self.convert("webp")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        present = self.names_in(self.path("webp", "photo.webp"))
+        self.assertEqual([n for n in self.WANTED if n not in present], [])
+        self.assertNotIn("Keywords", present)
+        self.assertIn("IPTC data", done.stdout)
+
+    def test_rotation_is_applied_and_the_orientation_tag_reset(self):
+        self.make_photo()
+        self.convert("png")
+        done = subprocess.run(["exiftool", "-s3", "-n", "-Orientation", self.path("png", "photo.png")],
+                              capture_output=True, text=True)
+        self.assertIn(done.stdout.strip(), ("1", ""))
 
 
 @unittest.skipUnless(HAVE_MAGICK, "ImageMagick not installed")

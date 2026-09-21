@@ -1,10 +1,12 @@
 """Image formats, converted with ImageMagick. Orientation is applied and
 metadata is kept unless asked otherwise."""
 
+import shlex
+import subprocess
 import sys
 
 from .base import Recipe
-from ..media import which
+from ..media import run_checked, which
 
 IMAGE_INPUTS = frozenset({".heic", ".heif", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff",
                           ".bmp", ".gif", ".avif"})
@@ -19,11 +21,20 @@ def imagemagick():
     return None
 
 
+def source_profiles(path):
+    """The embedded profiles of an image (exif, iptc, xmp, icc...), lower-cased."""
+    identify = ["magick", "identify"] if imagemagick() == ["magick"] else ["identify"]
+    done = subprocess.run(identify + ["-format", "%[profiles]", path + "[0]"], capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL)
+    return {name.strip().lower() for name in done.stdout.split(",") if name.strip()}
+
+
 class ImageRecipe(Recipe):
     kind = "image"
     magick_format = ""
     default_quality = None
     own_extensions = frozenset()
+    cannot_store = {}   # profile name -> what it holds, for formats that cannot keep it
 
     @property
     def input_exts(self):
@@ -63,6 +74,22 @@ class ImageRecipe(Recipe):
             command.append("-strip")
         return command + [f"{self.magick_format}:{tmp_output}"]
 
+    def notes(self, job):
+        if not self.cannot_store or job.options.get("strip"):
+            return []
+        lost = [what for name, what in self.cannot_store.items() if name in source_profiles(job.inputs[0])]
+        if not lost:
+            return []
+        return [f"{' and '.join(lost)} cannot be stored in {self.name.upper()} and was left out; "
+                "use jpg or png to keep it"]
+
+    def run(self, job, tmp_output, progress=None):
+        run_checked(self.command(job, tmp_output))
+        return self.notes(job)
+
+    def describe(self, job):
+        return "\n".join([shlex.join(self.command(job, job.output))] + [f"note: {n}" for n in self.notes(job)])
+
 
 class Jpg(ImageRecipe):
     name = "jpg"
@@ -89,3 +116,4 @@ class Webp(ImageRecipe):
     magick_format = "webp"
     default_quality = 85
     own_extensions = frozenset({".webp"})
+    cannot_store = {"iptc": "IPTC data (keywords, caption, credits)"}

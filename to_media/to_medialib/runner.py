@@ -6,7 +6,7 @@ import shutil
 import sys
 import time
 
-from .media import RecipeError
+from .media import RecipeError, copy_times
 
 
 @dataclasses.dataclass
@@ -15,6 +15,7 @@ class Policy:
     force: bool = False
     replace: bool = False
     verbose: bool = False
+    preserve_times: bool = True
 
 
 def format_duration(seconds):
@@ -97,6 +98,8 @@ def run_one(recipe, job, policy, progress=None):
         if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             raise RecipeError("the converter produced no output")
         os.replace(tmp, job.output)
+        if policy.preserve_times:
+            copy_times(job.inputs, job.output)
     except (RecipeError, OSError) as error:
         return "failed", str(error)
     finally:

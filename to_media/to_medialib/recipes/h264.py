@@ -16,7 +16,8 @@ import tempfile
 
 from .base import Recipe
 from ..jobs import Job
-from ..media import RecipeError, probe, probe_duration, run_ffmpeg
+from ..media import (PICTURE_TYPES, RecipeError, attached_pictures, format_tags, main_video, probe,
+                     probe_duration, run_checked, run_ffmpeg)
 
 ALL_VIDEO = frozenset({".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mpg", ".mpeg",
                        ".ts", ".m2ts", ".mts", ".vob", ".3gp", ".ogv", ".divx"})
@@ -33,6 +34,25 @@ DEFAULT_PROFILE = "balanced"
 TEXT_SUBTITLES = frozenset({"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd",
                             "subviewer", "subviewer1", "sami", "jacosub", "realtext", "stl", "vplayer", "pjs"})
 IMAGE_SUBTITLES = frozenset({"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"})
+
+
+# The tag names MP4's standard (iTunes style) tag format can hold. Anything else
+# needs QuickTime metadata, which ffmpeg-based players read but many tag editors
+# do not.
+STANDARD_MP4_TAGS = frozenset({
+    "title", "artist", "album_artist", "album", "date", "year", "comment", "genre", "copyright", "grouping",
+    "lyrics", "description", "synopsis", "show", "episode_id", "network", "season_number", "episode_sort",
+    "composer", "track", "disc", "compilation", "gapless_playback", "category", "keywords", "media_type",
+    "rating", "hd_video", "podcast", "episode_uid", "purl"})
+IGNORED_TAGS = frozenset({"encoder", "creation_time", "major_brand", "minor_version", "compatible_brands",
+                          "duration", "language", "handler_name", "vendor_id", "encoded_by"})
+HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+TELEMETRY_TRACKS = frozenset({"gpmd", "tmcd", "camm", "mebx", "fdsc"})
+
+
+def extra_tags(tags):
+    """Tag names that MP4's standard format cannot hold."""
+    return sorted(name for name in tags if name not in STANDARD_MP4_TAGS and name not in IGNORED_TAGS)
 
 
 @functools.lru_cache(maxsize=None)
@@ -94,6 +114,7 @@ class Plan:
     notes: list = dataclasses.field(default_factory=list)
     links: dict = dataclasses.field(default_factory=dict)
     soft_subtitles: int = 0
+    covers: list = dataclasses.field(default_factory=list)  # pictures to extract and attach (MKV)
 
 
 def link_source(name, target, folder):
@@ -152,6 +173,10 @@ class H264(Recipe):
                                     "(0 is the first, the default) or language such as eng")
         subtitles.add_argument("--container", choices=("mp4", "mkv"), default="mp4",
                                help="mp4 (default) holds text subtitles only; mkv keeps every track")
+        group.add_argument("--tags", choices=("auto", "all", "standard"), default="auto",
+                           help="which tags an MP4 keeps: auto (default) keeps every tag unless that would cost "
+                                "the cover picture; all always keeps every tag; standard keeps only the usual "
+                                "MP4 tags plus the cover")
 
     def options_from_args(self, args):
         options = {}
@@ -166,20 +191,50 @@ class H264(Recipe):
             options["subtitles"] = args.subtitles
         if args.container != "mp4":
             options["container"] = args.container
+        if args.tags != "auto":
+            options["tags"] = args.tags
         return options
 
     def duration(self, job):
         return probe_duration(job.inputs[0])
 
     def build(self, job, tmp_output, info=None):
-        """Work out the ffmpeg command, the notes for the user and any source links needed."""
+        """Work out the ffmpeg command, the notes for the user and any helper steps needed."""
         options = job.options
         chosen = settings(options)
         source = os.path.abspath(job.inputs[0])
         info = info if info is not None else probe(source)
+        video = main_video(info)
+        if video is None:
+            raise RecipeError("the file has no video stream")
+        v_index = video["index"]
         subtitles = subtitle_streams(info)
+        pictures = attached_pictures(info)
+        tags = format_tags(info)
         mkv = options.get("container") == "mkv"
-        notes, links = [], {}
+        notes, links, covers = [], {}, []
+
+        # MP4's usual tag format cannot hold arbitrary names; QuickTime metadata can, but
+        # it stores every tag that way and has no place for a cover picture. Choose which
+        # to keep when a file needs both, and say so.
+        extras = extra_tags(tags)
+        tag_mode = options.get("tags", "auto")
+        quicktime_tags = False
+        if not mkv and extras and tag_mode != "standard":
+            shown = ", ".join(extras[:6]) + (f" and {len(extras) - 6} more" if len(extras) > 6 else "")
+            if tag_mode == "all" or not pictures:
+                quicktime_tags = True
+                notes.append(f"{len(extras)} tag(s) that MP4's usual tag format cannot hold ({shown}) were kept by "
+                             "storing all tags as QuickTime metadata; ffmpeg-based players (VLC, mpv, Plex, "
+                             "Jellyfin) read it, but some tag editors do not. Use --container mkv for the most "
+                             "compatible tags, or --tags standard to keep only the usual ones")
+                if pictures:
+                    notes.append(f"{len(pictures)} cover picture(s) cannot be stored alongside QuickTime metadata "
+                                 "and were left out")
+            else:
+                notes.append(f"{len(extras)} tag(s) ({shown}) cannot be stored in an MP4 together with a cover "
+                             "picture and were left out; use --container mkv to keep everything, or --tags all "
+                             "to keep the tags instead of the cover")
 
         filters = ["yadif"] if options.get("deinterlace") else []
         burn_kind = None
@@ -197,22 +252,32 @@ class H264(Recipe):
 
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source]
         if burn_kind == "image":
-            graph = [f"[0:v:0][0:s:{burn_index}]overlay[ov]"]
+            graph = [f"[0:{v_index}][0:s:{burn_index}]overlay[ov]"]
             label = "[ov]"
             if filters:
                 graph.append("[ov]" + ",".join(filters) + "[v]")
                 label = "[v]"
             command += ["-filter_complex", ";".join(graph), "-map", label]
         else:
-            command += ["-map", "0:v:0"]
+            command += ["-map", f"0:{v_index}"]
         command += ["-map", "0:a?"]
+
+        # Cover pictures. MP4 holds them as attached pictures; in MKV they have to be
+        # re-added as attachments, because copying the stream leaves a bare video track.
+        if not mkv:
+            for picture in ([] if quicktime_tags else pictures):
+                command += ["-map", f"0:{picture['index']}"]
+        else:
+            covers = [{"index": p["index"], "codec": p.get("codec_name"), "tags": p.get("tags") or {}}
+                      for p in pictures]
 
         soft = 0
         keep_subtitles = options.get("subtitles", "keep") != "none" and options.get("burn_subtitles") is None
         text_tracks = []
+        fonts = 0
         if keep_subtitles and subtitles:
             if mkv:
-                command += ["-map", "0:s?", "-map", "0:t?"]
+                command += ["-map", "0:s?"]
                 soft = len(subtitles)
             else:
                 skipped = {"image": [], "other": []}
@@ -232,24 +297,50 @@ class H264(Recipe):
                 if skipped["other"]:
                     notes.append(f"{len(skipped['other'])} subtitle track(s) in an unsupported format "
                                  f"({', '.join(sorted(set(skipped['other'])))}) were left out")
+        if mkv and options.get("subtitles", "keep") != "none" and options.get("burn_subtitles") is None:
+            command += ["-map", "0:t?"]
+            fonts = sum(1 for s in info.get("streams", []) if s.get("codec_type") == "attachment")
 
         command += ["-map_metadata", "0", "-map_chapters", "0"]
+
         if filters and burn_kind != "image":
-            command += ["-vf", ",".join(filters)]
+            command += ["-filter:v:0", ",".join(filters)]
         if options.get("fps"):
-            command += ["-r", str(options["fps"])]
+            command += ["-r:v:0", str(options["fps"])]
         if options.get("encoder") == "nvenc":
-            command += ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", str(chosen["crf"]),
-                        "-b:v", "0"]
+            command += ["-c:v:0", "h264_nvenc", "-preset:v:0", "p5", "-rc:v:0", "vbr", "-cq:v:0",
+                        str(chosen["crf"]), "-b:v:0", "0"]
         else:
-            command += ["-c:v", "libx264", "-crf", str(chosen["crf"]), "-preset", chosen["speed"]]
-        command += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", chosen["audio_bitrate"]]
+            command += ["-c:v:0", "libx264", "-crf:v:0", str(chosen["crf"]), "-preset:v:0", chosen["speed"]]
+        command += ["-pix_fmt:v:0", "yuv420p"]
+        if not mkv and not quicktime_tags:
+            for number, picture in enumerate(pictures, start=1):
+                codec = "copy" if picture.get("codec_name") in ("mjpeg", "png") else "mjpeg"
+                command += [f"-c:v:{number}", codec, f"-disposition:v:{number}", "attached_pic"]
+        command += ["-c:a", "aac", "-b:a", chosen["audio_bitrate"]]
         if mkv:
-            command += (["-c:s", "copy", "-c:t", "copy"] if soft else []) + ["-f", "matroska"]
+            command += (["-c:s", "copy", "-c:t", "copy"] if soft or fonts else [])
+            for number, cover in enumerate(covers):
+                extension, mime = PICTURE_TYPES.get(cover["codec"], (".jpg", "image/jpeg"))
+                name = cover["tags"].get("filename") or f"cover{extension}"
+                mime = cover["tags"].get("mimetype") or mime
+                slot = fonts + number
+                command += ["-attach", f"<cover:{number}>", f"-metadata:s:t:{slot}", f"mimetype={mime}",
+                            f"-metadata:s:t:{slot}", f"filename={name}"]
+            command += ["-f", "matroska"]
         else:
-            command += (["-c:s", "mov_text"] if text_tracks else []) + ["-movflags", "+faststart", "-f", "mp4"]
+            command += (["-c:s", "mov_text"] if text_tracks else [])
+            command += ["-movflags", "+faststart" + ("+use_metadata_tags" if quicktime_tags else ""), "-f", "mp4"]
         command.append(os.path.abspath(tmp_output))
-        return Plan(command, notes, links, soft)
+
+        if video.get("color_transfer") in HDR_TRANSFERS:
+            notes.append(f"the source is HDR ({video['color_transfer']}); H.264 output here is 8-bit SDR without "
+                         "tone mapping, so colours will look flat")
+        telemetry = sorted({s.get("codec_tag_string") for s in info.get("streams", [])
+                            if s.get("codec_type") == "data" and s.get("codec_tag_string") in TELEMETRY_TRACKS})
+        if telemetry:
+            notes.append(f"camera data track(s) ({', '.join(telemetry)}) were not copied")
+        return Plan(command, notes, links, soft, covers)
 
     def command(self, job, tmp_output):
         return self.build(job, tmp_output).argv
@@ -259,17 +350,31 @@ class H264(Recipe):
         lines = [shlex.join(plan.argv)]
         if plan.links:
             lines.append("(the source is linked into a scratch folder so the subtitle filter can read it)")
+        if plan.covers:
+            lines.append(f"(first extracts {len(plan.covers)} cover picture(s) so they can be attached)")
         return "\n".join(lines + [f"note: {note}" for note in plan.notes])
+
+    def extract_cover(self, source, cover, path):
+        """Write one cover picture out as a file; pictures ffmpeg cannot copy become JPEG."""
+        codec = "copy" if cover["codec"] in PICTURE_TYPES else "mjpeg"
+        run_checked(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source,
+                     "-map", f"0:{cover['index']}", "-c:v", codec, "-frames:v", "1", "-f", "image2", path])
 
     def execute(self, plan, job, progress):
         duration = self.duration(job)
-        if not plan.links:
+        if not plan.links and not plan.covers:
             run_ffmpeg(plan.argv, duration, progress)
             return
         with tempfile.TemporaryDirectory() as folder:
             for name, target in plan.links.items():
                 link_source(name, target, folder)
-            run_ffmpeg(plan.argv, duration, progress, cwd=folder)
+            argv = list(plan.argv)
+            for number, cover in enumerate(plan.covers):
+                extension = PICTURE_TYPES.get(cover["codec"], (".jpg",))[0]
+                path = os.path.join(folder, f"cover{number}{extension}")
+                self.extract_cover(os.path.abspath(job.inputs[0]), cover, path)
+                argv = [path if arg == f"<cover:{number}>" else arg for arg in argv]
+            run_ffmpeg(argv, duration, progress, cwd=folder if plan.links else None)
 
     def run(self, job, tmp_output, progress=None):
         plan = self.build(job, tmp_output)
