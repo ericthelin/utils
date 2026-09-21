@@ -1,0 +1,60 @@
+#!/bin/sh
+# Copy standard input to the system clipboard.  This intentionally mirrors the
+# common `pbcopy` usage: `command-producing-text | clip`.  On Linux,
+# `--terminal` (or `-t`) copies to the terminal/middle-click selection instead.
+
+set -eu
+
+if [ -t 0 ]; then
+    echo 'clip: no standard input; pipe or redirect the text to copy' >&2
+    exit 64
+fi
+
+selection='clipboard'
+if [ "${1-}" = '--terminal' ] || [ "${1-}" = '-t' ]; then
+    selection='primary'
+    shift
+    if [ "$(uname -s)" != 'Linux' ]; then
+        echo 'clip: --terminal is available only on Linux' >&2
+        exit 64
+    fi
+fi
+
+if [ "$(uname -s)" = 'Darwin' ] && command -v pbcopy >/dev/null 2>&1; then
+    # Keep macOS-specific pbcopy options working when they are supplied.
+    exec pbcopy "$@"
+fi
+
+if [ "$#" -ne 0 ]; then
+    echo "clip: arguments are supported only when using macOS pbcopy; copy data via standard input" >&2
+    exit 64
+fi
+
+case "${OSTYPE-}" in
+    msys*|cygwin*|win32*)
+        if command -v clip.exe >/dev/null 2>&1; then
+            exec clip.exe
+        fi
+        ;;
+esac
+
+if command -v wl-copy >/dev/null 2>&1; then
+    if [ "$selection" = 'primary' ]; then
+        exec wl-copy --primary
+    fi
+    exec wl-copy
+fi
+
+if command -v xclip >/dev/null 2>&1; then
+    exec xclip -selection "$selection"
+fi
+
+if command -v xsel >/dev/null 2>&1; then
+    if [ "$selection" = 'primary' ]; then
+        exec xsel --primary --input
+    fi
+    exec xsel --clipboard --input
+fi
+
+echo "clip: no clipboard command found (tried pbcopy, clip.exe, wl-copy, xclip, and xsel)" >&2
+exit 127
