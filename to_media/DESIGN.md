@@ -45,6 +45,15 @@ to_media/
 The tool name lives in one place (`to_medialib/config.py`, `TOOL_NAME`) so that
 the config directory and messages follow it.
 
+### Progress
+
+`Recipe.run(job, tmp_output, progress)` takes an optional callback that receives
+the fraction complete (0.0 to 1.0). The ffmpeg-based recipes feed it from
+ffmpeg's own `-progress` output and the input's duration, and the inline runner
+turns it into a live bar with an estimate. A worker will pass a callback that
+reports the same fraction to the server, so inline and queued runs share one code
+path.
+
 ### Recipes
 
 A recipe knows how to turn inputs into one output format: its input extensions,
@@ -184,11 +193,14 @@ can be given.
 
 ## Milestones
 
-1. **Shared core and the first recipes, inline only** (this milestone): the Job
-   record, runner, `to_media formats`, and the mp3, jpg, png, webp and m4b
-   recipes, with tests on generated media.
-2. The h264 recipe, and parity with the old `to_mp3`, `to_m4b` and `to_h264`, so
-   the `to_*` commands can be pointed at `to_media`.
+1. **Shared core and the first recipes, inline only** (done): the Job record,
+   runner, `to_media formats`, and the mp3, jpg, png, webp and m4b recipes, with
+   tests on generated media.
+2. **The h264 recipe (done), then parity with the old converters** so the `to_*`
+   commands can be pointed at `to_media`. Still to do for `to_mp3`: FLAC albums
+   split by `.cue`, Audible input, per-chapter splitting and re-encoding of
+   existing MP3s. `to_m4b` and `to_h264` are functionally covered (with the
+   differences listed in the README).
 3. Server, worker and client CLI, then the status page.
 4. Data transfer mode, TLS, chunked claims for small jobs.
 5. Retire the old Perl and PHP converters and Gearman.

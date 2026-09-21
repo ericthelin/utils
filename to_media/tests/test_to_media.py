@@ -19,7 +19,8 @@ sys.path.insert(0, TOOL_DIR)
 
 from to_medialib import cli, recipes, runner, sources  # noqa: E402
 from to_medialib.jobs import Job  # noqa: E402
-from to_medialib.media import natural_key, safe_filename  # noqa: E402
+from to_medialib.media import natural_key, run_ffmpeg, safe_filename  # noqa: E402
+from to_medialib.recipes import h264  # noqa: E402
 from to_medialib.recipes import m4b  # noqa: E402
 from to_medialib.recipes.base import Recipe  # noqa: E402
 from to_medialib.recipes.image import imagemagick  # noqa: E402
@@ -162,6 +163,97 @@ class BookNameTests(unittest.TestCase):
         self.assertIn("END=1500", text)
 
 
+class FakeTerminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ProgressTests(unittest.TestCase):
+    def test_progress_text_shows_bar_percent_elapsed_and_eta(self):
+        text = runner.progress_text(0.5, 60, 60, 80)
+        self.assertIn("50.0%", text)
+        self.assertIn("elapsed 1:00", text)
+        self.assertIn("ETA 1:00", text)
+        self.assertGreater(text.count("#"), 0)
+
+    def test_progress_text_fits_a_narrow_terminal(self):
+        self.assertLess(len(runner.progress_text(0.5, 60, 60, 40)), 40)
+
+    def test_unknown_eta_is_shown_as_dashes(self):
+        self.assertIn("ETA --:--", runner.progress_text(0.0, 0, None, 80))
+
+    def test_line_updates_in_place_on_a_terminal_and_clears_when_done(self):
+        now = [0.0]
+        out = FakeTerminal()
+        line = runner.ProgressLine(out, clock=lambda: now[0])
+        now[0] = 10.0
+        line.update(0.25)
+        self.assertIn("25.0%", out.getvalue())
+        self.assertIn("ETA 0:30", out.getvalue())
+        line.finish()
+        self.assertTrue(out.getvalue().endswith("\r\033[K"))
+
+    def test_updates_are_rate_limited_but_the_end_is_always_shown(self):
+        now = [0.0]
+        out = FakeTerminal()
+        line = runner.ProgressLine(out, clock=lambda: now[0])
+        line.update(0.1)
+        now[0] = 0.1
+        line.update(0.2)
+        self.assertEqual(out.getvalue().count("%"), 1)
+        line.update(1.0)
+        self.assertIn("100.0%", out.getvalue())
+
+    def test_silent_when_output_is_not_a_terminal(self):
+        out = io.StringIO()
+        line = runner.ProgressLine(out)
+        line.update(0.5)
+        line.finish()
+        self.assertEqual(out.getvalue(), "")
+
+
+class H264OptionTests(unittest.TestCase):
+    recipe = recipes.get("h264")
+
+    def command(self, **options):
+        return self.recipe.command(Job("h264", ["in.mkv"], "out.mp4", options), "tmp.mp4")
+
+    def test_default_is_the_balanced_profile(self):
+        command = self.command()
+        self.assertEqual(command[command.index("-crf") + 1], "22")
+        self.assertEqual(command[command.index("-preset") + 1], "medium")
+        self.assertNotIn("-vf", command)
+
+    def test_profile_sets_defaults_and_options_override_them(self):
+        command = self.command(profile="fast720", crf=30)
+        self.assertEqual(command[command.index("-crf") + 1], "30")
+        self.assertEqual(command[command.index("-preset") + 1], "veryfast")
+        self.assertIn("min(ih,720)", command[command.index("-vf") + 1])
+
+    def test_chapters_metadata_and_all_audio_are_mapped(self):
+        command = self.command()
+        self.assertIn("-map_chapters", command)
+        self.assertEqual(command[command.index("0:a?") - 1], "-map")
+
+    def test_nvenc_uses_the_gpu_encoder(self):
+        command = self.command(encoder="nvenc", crf=25)
+        self.assertIn("h264_nvenc", command)
+        self.assertEqual(command[command.index("-cq") + 1], "25")
+        self.assertNotIn("libx264", command)
+
+    def test_deinterlace_comes_before_scaling(self):
+        chain = self.command(deinterlace=True, max_height=480)
+        self.assertTrue(chain[chain.index("-vf") + 1].startswith("yadif,scale"))
+
+    def test_mp4_files_found_in_folders_are_not_reencoded_over_themselves(self):
+        self.assertNotIn(".mp4", self.recipe.input_exts)
+        self.assertIn(".mkv", self.recipe.input_exts)
+
+    def test_settings_merge(self):
+        self.assertEqual(h264.settings({"profile": "hq1080", "max_height": 720})["max_height"], 720)
+        self.assertEqual(h264.settings({})["audio_bitrate"], "160k")
+
+
 class FakeRecipe(Recipe):
     """Writes the text 'converted', or fails when told to."""
     name = "fake"
@@ -170,7 +262,7 @@ class FakeRecipe(Recipe):
     def __init__(self, fail=False, write_nothing=False):
         self.fail, self.write_nothing = fail, write_nothing
 
-    def run(self, job, tmp_output):
+    def run(self, job, tmp_output, progress=None):
         if self.fail:
             with open(tmp_output, "w") as handle:
                 handle.write("half written")
@@ -368,6 +460,103 @@ class AudioConversionTests(TempDirTestCase):
         self.assertIn("2 planned", done.stdout)
         done = self.run_cli("m4b", "-n", "--combine", self.path("one.mp3"), self.path("two.mp3"))
         self.assertIn("1 planned", done.stdout)
+
+
+def nvenc_works():
+    try:
+        done = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=320x240:d=1",
+                               "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0
+
+
+@unittest.skipUnless(HAVE_FFMPEG and h264.has_encoder("libx264"), "ffmpeg with libx264 not installed")
+class VideoConversionTests(TempDirTestCase):
+    def run_cli(self, *argv):
+        return subprocess.run([sys.executable, ENTRY, *argv], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+
+    def make_video(self, name, size="640x360", audio_tracks=1, chapters=False):
+        target = self.path(name)
+        args = ["-f", "lavfi", "-i", f"testsrc=s={size}:r=25:d=2"]
+        for track in range(audio_tracks):
+            args += ["-f", "lavfi", "-i", f"sine=frequency={400 + track * 100}:d=2"]
+        if chapters:
+            meta = self.touch("chapters.txt", text=";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\n"
+                              "title=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Two\n")
+            args += ["-i", meta]
+        maps = ["-map", "0:v"] + sum((["-map", f"{i + 1}:a"] for i in range(audio_tracks)), [])
+        if chapters:
+            maps += ["-map_metadata", str(audio_tracks + 1)]
+        ffmpeg(*args, *maps, "-c:v", "mpeg4", "-c:a", "mp3", target)
+        return target
+
+    def streams(self, path):
+        return ffprobe_json(path, "-show_streams", "-show_chapters")
+
+    def test_converts_to_h264_and_aac_and_keeps_the_source(self):
+        src = self.make_video("clip.avi")
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        info = self.streams(self.path("clip.mp4"))
+        kinds = {s["codec_type"]: s for s in info["streams"]}
+        self.assertEqual((kinds["video"]["codec_name"], kinds["video"]["pix_fmt"]), ("h264", "yuv420p"))
+        self.assertEqual(kinds["audio"]["codec_name"], "aac")
+        self.assertTrue(os.path.exists(src))
+
+    def test_max_height_shrinks_but_never_enlarges(self):
+        big = self.make_video("big.avi", size="640x360")
+        small = self.make_video("small.avi", size="160x90")
+        done = self.run_cli("h264", "--max-height", "180", big, small)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        big_video = [s for s in self.streams(self.path("big.mp4"))["streams"] if s["codec_type"] == "video"][0]
+        small_video = [s for s in self.streams(self.path("small.mp4"))["streams"] if s["codec_type"] == "video"][0]
+        self.assertEqual((big_video["width"], big_video["height"]), (320, 180))
+        self.assertEqual((small_video["width"], small_video["height"]), (160, 90))
+
+    def test_chapters_and_every_audio_track_are_kept(self):
+        src = self.make_video("multi.mkv", audio_tracks=2, chapters=True)
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        info = self.streams(self.path("multi.mp4"))
+        self.assertEqual([c["tags"]["title"] for c in info["chapters"]], ["One", "Two"])
+        self.assertEqual(sum(1 for s in info["streams"] if s["codec_type"] == "audio"), 2)
+
+    def test_mp4_in_a_folder_is_skipped_but_named_explicitly_it_converts_with_out(self):
+        self.make_video("a.mkv")
+        self.make_video("b.avi")
+        shutil.copy(self.path("a.mkv"), self.path("c.mp4"))
+        done = self.run_cli("h264", "-n", self.tmp)
+        self.assertIn("2 planned", done.stdout)
+        done = self.run_cli("h264", "--out", self.path("out"), self.path("c.mp4"))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(os.path.exists(self.path("out", "c.mp4")))
+
+    def test_progress_is_reported_while_encoding(self):
+        src = self.make_video("clip.avi")
+        seen = []
+        recipe = recipes.get("h264")
+        job = Job("h264", [src], self.path("out.mp4"), {"speed": "ultrafast"})
+        recipe.run(job, self.path("out.mp4"), seen.append)
+        self.assertTrue(seen)
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(seen[-1], 1.0)
+
+    def test_a_bad_input_fails_without_leaving_output(self):
+        bad = self.touch("broken.mkv", text="not video")
+        done = self.run_cli("h264", bad)
+        self.assertEqual(done.returncode, 1)
+        self.assertFalse(os.path.exists(self.path("broken.mp4")))
+        self.assertEqual([f for f in os.listdir(self.tmp) if "partial" in f], [])
+
+    @unittest.skipUnless(nvenc_works(), "NVENC not available")
+    def test_nvenc_encoder(self):
+        src = self.make_video("gpu.avi")
+        done = self.run_cli("h264", "--encoder", "nvenc", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        video = [s for s in self.streams(self.path("gpu.mp4"))["streams"] if s["codec_type"] == "video"][0]
+        self.assertEqual(video["codec_name"], "h264")
 
 
 @unittest.skipUnless(HAVE_MAGICK, "ImageMagick not installed")

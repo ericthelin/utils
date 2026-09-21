@@ -1,6 +1,7 @@
 """MP3 audio, encoded with ffmpeg and LAME. Tags are carried over."""
 
 from .base import Recipe
+from ..media import probe_duration
 
 AUDIO_INPUTS = frozenset({".flac", ".wav", ".aiff", ".aif", ".m4a", ".m4b", ".aac", ".ogg", ".oga",
                           ".opus", ".wma", ".wv", ".ape"})
@@ -35,6 +36,9 @@ class Mp3(Recipe):
         if args.audiobook:
             options["audiobook"] = True
         return options
+
+    def duration(self, job):
+        return probe_duration(job.inputs[0])
 
     def command(self, job, tmp_output):
         options = job.options

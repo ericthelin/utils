@@ -8,7 +8,7 @@ import tempfile
 
 from .base import Recipe
 from ..jobs import Job
-from ..media import RecipeError, natural_key, probe, run_checked, safe_filename
+from ..media import RecipeError, natural_key, probe, run_ffmpeg, safe_filename
 
 BOOK_INPUTS = frozenset({".mp3", ".opus", ".m4a", ".ogg", ".flac", ".wav", ".aac"})
 DEFAULT_BITRATE = "32k"
@@ -138,7 +138,7 @@ class M4b(Recipe):
     def describe(self, job):
         return f"ffmpeg: join {len(job.inputs)} file(s) into {job.output} with one chapter per file"
 
-    def run(self, job, tmp_output):
+    def run(self, job, tmp_output, progress=None):
         options = job.options
         chapters, position = [], 0.0
         for number, path in enumerate(job.inputs, 1):
@@ -165,4 +165,4 @@ class M4b(Recipe):
                 if options.get(key):
                     command += ["-metadata", f"{tag}={options[key]}"]
             command += ["-metadata", "genre=Audiobook", "-movflags", "+faststart", "-f", "mp4", tmp_output]
-            run_checked(command)
+            run_ffmpeg(command, position, progress)

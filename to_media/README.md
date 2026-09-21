@@ -1,13 +1,14 @@
 # to_media
 
-**Reshape audio, images and audiobooks from one format to another with one safe, predictable command, and (soon) spread a big batch across every machine you own.**
+**Reshape audio, video, images and audiobooks from one format to another with one safe, predictable command, and (soon) spread a big batch across every machine you own.**
 
-`to_media mp3 *.flac`, `to_media jpg --max 2048 *.heic`, `to_media m4b "My Book/"`:
+`to_media mp3 *.flac`, `to_media h264 *.mkv`, `to_media jpg --max 2048 *.heic`,
+`to_media m4b "My Book/"`:
 the same options, the same safety rules and the same progress report whatever
 you are converting. Every format also has a short alias you can call directly:
 `to_mp3`, `to_jpg`, `to_m4b`.
 
-> **Status:** inline conversion of mp3, m4b, jpg, png and webp works today.
+> **Status:** inline conversion of mp3, h264, m4b, jpg, png and webp works today.
 > The job server and workers (`--queue`, `to_media server`, `to_media worker`)
 > are designed but **not built yet**; see [DESIGN.md](DESIGN.md). Until then
 > `--queue` and the server commands say so and do nothing.
@@ -43,6 +44,8 @@ $ to_media mp3 ~/Music/Album
   titled chapter per file, the author and title worked out from the folder name
   or the tags, and the chapters in the right order without zero-padded names.
 - **Rehearse first.** `--dry-run` prints the exact command for every file.
+- **Live progress.** Long conversions (video especially) show a progress bar with
+  the percentage, elapsed time and an estimated time remaining.
 - **Built to scale out.** Jobs are plain data, so the planned job server can send
   the same work to a farm of machines (see [DESIGN.md](DESIGN.md)).
 
@@ -52,6 +55,7 @@ $ to_media mp3 ~/Music/Album
 to_media formats                          # what is available on this machine
 to_media mp3 ~/Music/Album                # every audio file in the folder, next to the originals
 to_media mp3 --out ~/mp3 ~/Music/Album    # same, into another folder
+to_media h264 --profile fast720 *.mkv     # smaller, phone-friendly MP4s
 to_media jpg --max 2048 ~/Photos/*.heic   # phone photos to shareable JPEGs
 to_media m4b "Jane Doe - Sample Book/"    # a folder of files becomes one chaptered audiobook
 to_media mp3 --dry-run *.flac             # show the commands, do nothing
@@ -64,7 +68,7 @@ to_media FORMAT [options] PATH ...
 to_media formats
 ```
 
-`FORMAT` is one of `mp3`, `m4b`, `jpg` (also `jpeg`), `png`, `webp`. Any command
+`FORMAT` is one of `mp3`, `h264`, `m4b`, `jpg` (also `jpeg`), `png`, `webp`. Any command
 named `to_<format>` that points at `to_media.py` works the same as
 `to_media <format>`.
 
@@ -89,6 +93,27 @@ named `to_<format>` that points at `to_media.py` works the same as
 | `--audiobook` | Small mono files for spoken word (quality 8, genre set to Audiobook). |
 
 Reads FLAC, WAV, AIFF, M4A/M4B, AAC, OGG/Opus, WMA, WavPack and Monkey's Audio.
+
+### `h264`
+
+H.264 video with AAC audio in an `.mp4`, encoded with ffmpeg.
+
+| Option | Meaning |
+| --- | --- |
+| `--profile NAME` | A starting point: `fast720` (720p at most, quick and small), `balanced` (default, keeps the size) or `hq1080` (1080p at most, slow and best). |
+| `--crf 0-51` | Quality, lower is better. Overrides the profile (profiles use 23, 22 and 19). |
+| `--speed NAME` | x264 speed from `ultrafast` to `veryslow`; slower makes smaller files. |
+| `--max-height PIXELS` | Scale down so the picture is at most this tall. Never enlarges. |
+| `--audio-bitrate RATE` | AAC bitrate, for example `160k`. |
+| `--fps N` | Force a frame rate. |
+| `--deinterlace` | Deinterlace with yadif (for older TV and camcorder video). |
+| `--encoder x264\|nvenc` | `x264` on the CPU (default), or `nvenc` on an NVIDIA GPU, which is much faster. |
+
+Chapters, metadata and **every** audio track are kept; the video is converted to
+the widely playable `yuv420p` format. Reads MKV, AVI, MOV, M4V, WMV, FLV, WebM,
+MPEG, TS/M2TS, VOB, 3GP and more. `.mp4` files found while scanning a folder are
+skipped (they would land on top of themselves); name one explicitly with `--out`
+to re-encode it.
 
 ### `m4b`
 
@@ -135,6 +160,9 @@ converting a folder.
   `--out`.
 - **Images** are rotated to their intended orientation and keep their metadata
   unless `--strip`.
+- **Progress.** On a terminal each file shows a live bar with the percentage,
+  elapsed time and estimated time remaining, cleared when the file finishes.
+  When output is redirected to a file or pipe, only the per-file lines are printed.
 
 ## Installation
 
@@ -143,7 +171,7 @@ Python 3.8 or newer, tested on 3.12). It drives these programs:
 
 | Program | Needed for |
 | --- | --- |
-| `ffmpeg` and `ffprobe` | `mp3` and `m4b` |
+| `ffmpeg` and `ffprobe` (built with `libx264` for video) | `mp3`, `h264` and `m4b` |
 | ImageMagick (`magick`, or `convert` on Linux and macOS) | `jpg`, `png`, `webp` |
 
 Only the programs for the formats you use are needed; `to_media formats` shows
@@ -224,6 +252,9 @@ To use a short alias, link the program under the alias name, for example
 `ln -s /path/to/utils/to_media/to_media.py ~/.local/bin/to_webp`. The repository's
 own `bin/to_mp3`, `bin/to_m4b` and `bin/to_h264` are still the older standalone
 tools; they will become aliases of `to_media` once it matches their features.
+Note that `to_media h264` differs from the old `to_h264`: it uses ffmpeg (not
+HandBrake), writes `.mp4` (not `.m4v`), keeps originals unless `--replace`, and
+defaults to the source's size (use `--profile fast720` for the old 720p default).
 
 ## Troubleshooting
 
@@ -239,8 +270,13 @@ tools; they will become aliases of `to_media` once it matches their features.
 
 ## Limitations
 
-- Only mp3, m4b, jpg, png and webp so far. Video (h264) and more formats are
-  planned.
+- Only mp3, h264, m4b, jpg, png and webp so far; more formats are planned.
+- Subtitle tracks are not copied into h264 output.
+- h264 uses ffmpeg, not HandBrake, so HandBrake presets and DVD "main feature"
+  selection are not available; rip discs with `dvd2iso` first.
+- Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums,
+  no Audible files, no per-chapter splitting, and no re-encoding of existing
+  MP3s. The older tool stays until these are covered.
 - No job server, workers or `--queue` yet.
 - MP3 output does not copy cover art.
 - m4b needs every file in a book to be readable by ffmpeg and joins them

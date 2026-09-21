@@ -4,7 +4,7 @@ import os
 import shlex
 
 from ..jobs import Job
-from ..media import missing_programs, run_checked
+from ..media import missing_programs, run_checked, run_ffmpeg
 
 
 class Recipe:
@@ -44,8 +44,16 @@ class Recipe:
         """The program and arguments that convert one job (simple recipes)."""
         raise NotImplementedError
 
-    def run(self, job, tmp_output):
-        run_checked(self.command(job, tmp_output))
+    def duration(self, job):
+        """Seconds of media in the job, for progress reporting; None if unknown."""
+        return None
+
+    def run(self, job, tmp_output, progress=None):
+        command = self.command(job, tmp_output)
+        if command[0] == "ffmpeg":
+            run_ffmpeg(command, self.duration(job), progress)
+        else:
+            run_checked(command)
 
     def describe(self, job):
         return shlex.join(self.command(job, job.output))

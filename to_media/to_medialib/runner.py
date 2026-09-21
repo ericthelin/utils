@@ -2,6 +2,7 @@
 
 import dataclasses
 import os
+import shutil
 import sys
 import time
 
@@ -22,6 +23,46 @@ def format_duration(seconds):
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def progress_text(fraction, elapsed, eta, columns):
+    """One status line: a bar, the percentage, elapsed time and the estimate."""
+    eta_text = "ETA --:--" if eta is None else f"ETA {format_duration(eta)}"
+    tail = f" {fraction * 100:5.1f}%  elapsed {format_duration(elapsed)}  {eta_text}"
+    width = max(10, min(30, columns - len(tail) - 8))
+    filled = int(round(max(0.0, min(1.0, fraction)) * width))
+    return ("    [" + "#" * filled + "-" * (width - filled) + "]" + tail)[:max(20, columns - 1)]
+
+
+class ProgressLine:
+    """A live progress line on a terminal; silent when output is not a terminal."""
+
+    def __init__(self, out, clock=time.monotonic):
+        self.out, self.clock = out, clock
+        self.enabled = hasattr(out, "isatty") and out.isatty()
+        self.start = clock()
+        self.last = float("-inf")
+        self.shown = False
+
+    def update(self, fraction):
+        if not self.enabled:
+            return
+        now = self.clock()
+        if fraction < 1.0 and now - self.last < 0.25:
+            return
+        self.last = now
+        elapsed = now - self.start
+        eta = elapsed * (1 - fraction) / fraction if fraction >= 0.02 else None
+        columns = shutil.get_terminal_size((80, 20)).columns
+        self.out.write("\r" + progress_text(fraction, elapsed, eta, columns) + "\033[K")
+        self.out.flush()
+        self.shown = True
+
+    def finish(self):
+        if self.shown:
+            self.out.write("\r\033[K")
+            self.out.flush()
+            self.shown = False
+
+
 def partial_path(output):
     folder, name = os.path.split(output)
     stem, ext = os.path.splitext(name)
@@ -38,7 +79,7 @@ def display(job):
     return f"{source} -> {os.path.basename(job.output)}"
 
 
-def run_one(recipe, job, policy):
+def run_one(recipe, job, policy, progress=None):
     """Returns (status, detail): done, skipped, failed or planned."""
     if any(same_file(path, job.output) for path in job.inputs):
         return "skipped", "output would overwrite the source"
@@ -49,7 +90,7 @@ def run_one(recipe, job, policy):
     tmp = partial_path(job.output)
     try:
         os.makedirs(os.path.dirname(job.output) or ".", exist_ok=True)
-        recipe.run(job, tmp)
+        recipe.run(job, tmp, progress)
         if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             raise RecipeError("the converter produced no output")
         os.replace(tmp, job.output)
@@ -71,7 +112,9 @@ def run_jobs(recipe, jobs, policy, out=None):
     started = time.monotonic()
     for index, job in enumerate(jobs, 1):
         print(f"[{index}/{len(jobs)}] {display(job)}", file=out, flush=True)
-        status, detail = run_one(recipe, job, policy)
+        bar = ProgressLine(out)
+        status, detail = run_one(recipe, job, policy, bar.update)
+        bar.finish()
         counts[status] += 1
         if status == "planned":
             print(f"    {detail}", file=out)

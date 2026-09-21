@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 
 class RecipeError(Exception):
@@ -30,6 +31,32 @@ def run_checked(argv):
     code, tail = run_quiet(argv)
     if code != 0:
         raise RecipeError(f"{os.path.basename(argv[0])} failed (exit {code}): {tail}")
+
+
+def probe_duration(path):
+    """Length in seconds, or None when it cannot be read."""
+    try:
+        return float(probe(path)["format"]["duration"])
+    except (RecipeError, KeyError, ValueError):
+        return None
+
+
+def run_ffmpeg(argv, duration=None, progress=None):
+    """Run ffmpeg. When the length is known, progress(fraction) is called as it runs."""
+    command = [argv[0], "-progress", "pipe:1", "-nostats"] + argv[1:]
+    with tempfile.TemporaryFile("w+", errors="replace") as errors:
+        with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=errors, text=True) as process:
+            for line in process.stdout:
+                key, _, value = line.strip().partition("=")
+                if progress and duration and key == "out_time_us" and value.lstrip("-").isdigit():
+                    progress(min(1.0, max(0.0, int(value) / 1e6 / duration)))
+        if process.returncode:
+            errors.seek(0)
+            tail = "\n".join(errors.read().strip().splitlines()[-5:])
+            raise RecipeError(f"ffmpeg failed (exit {process.returncode}): {tail}")
+    if progress and duration:
+        progress(1.0)
 
 
 def probe(path):
