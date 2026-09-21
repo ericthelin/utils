@@ -149,8 +149,8 @@ brew install eza              # strongly recommended, see below
 
 Without `eza`, the fallback uses GNU-style long options (`--all`,
 `--group-directories-first`) that the BSD `ls` shipped with macOS does not
-understand, so `-l` and friends may print an error. Install `eza`, or GNU
-coreutils (`brew install coreutils`, then use `gls` via `LS_ENHANCED_TOOL`).
+understand, so `-l` and friends may print an error. Install `eza`; the
+fallback always calls `/bin/ls`.
 
 ### Windows (untested)
 
