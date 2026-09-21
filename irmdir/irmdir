@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""
+irmdir - Improved rmdir replacement with recursive deletion support
+"""
+import sys
+import os
+import argparse
+import shutil
+import subprocess
+
+def main():
+    # Detect mode.
+    # Default is NOW recursive (per user request).
+    # We check for '-D' or '--no-descendants' to disable it.
+
+    is_recursive = True
+    args_to_check = sys.argv[1:]
+
+    # Flags we consider as disabling recursive mode
+    # Note: If -D is present, we turn OFF recursion.
+    # However, if -d/-r is ALSO present AFTER -D, we turn it back ON?
+    # Standard Unix behavior: last flag wins.
+    # Flags affecting mode:
+    #   Recursive: -r, --recursive, -d, --descendants
+    #   Standard:  -D, --no-descendants (custom flag)
+
+    # We scan to find the *last* mode flag.
+
+    for arg in args_to_check:
+        if arg == '--':
+            # End of options, stop scanning for mode flags
+            break
+
+        # Long options
+        if arg in {'--recursive', '--descendants'}:
+            is_recursive = True
+        elif arg in {'--no-descendants', '--no-recursive'}: # supporting both for completeness
+            is_recursive = False
+
+        # Short options (possibly bundled)
+        elif arg.startswith('-') and not arg.startswith('--'):
+            # iterate chars
+            for char in arg[1:]:
+                if char in ['r', 'd']:
+                    is_recursive = True
+                elif char == 'D':
+                    is_recursive = False
+
+    if not is_recursive:
+        # Pass control completely to system rmdir to ensure 100% compatibility
+        rmdir_path = shutil.which("rmdir")
+        if not rmdir_path:
+             print("irmdir: standard rmdir command not found", file=sys.stderr)
+             sys.exit(1)
+
+        # We must filter out our custom flags (-D, -d, -r etc) before calling rmdir
+        # rmdir won't understand -D or -d (unless rmdir has changed, but typically it hasn't)
+        # We need to construct a clean argv.
+
+        clean_argv = [rmdir_path]
+
+        # We need to be careful with arguments.
+        # Simple approach: Removing specific known flags.
+        # But bundled flags like '-vD' need to become '-v'.
+
+        i = 0
+        while i < len(args_to_check):
+            arg = args_to_check[i]
+
+            if arg == '--':
+                clean_argv.append(arg)
+                clean_argv.extend(args_to_check[i+1:])
+                break
+
+            if arg in {'--recursive', '--descendants', '--no-descendants', '--no-recursive', '-r', '-d', '-D'}:
+                # Skip entire arg
+                i += 1
+                continue
+
+            if arg.startswith('-') and not arg.startswith('--'):
+                # Handle bundled flags
+                new_short_flags = ""
+                for char in arg[1:]:
+                    if char not in ['r', 'd', 'D']:
+                        new_short_flags += char
+
+                if new_short_flags:
+                    clean_argv.append(f"-{new_short_flags}")
+            else:
+                clean_argv.append(arg)
+
+            i += 1
+
+        # Flush buffers before exec
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            # Execute rmdir with cleaned arguments
+            os.execv(rmdir_path, clean_argv)
+        except OSError as e:
+            print(f"irmdir: exec failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # RECURSIVE MODE IMPLEMENTATION
+    parser = argparse.ArgumentParser(
+        description="A replacement for rmdir with recursive deletion support.",
+        add_help=False, # Manual help handling
+        allow_abbrev=False
+    )
+
+    # Standard rmdir flags (to parse them correctly)
+    parser.add_argument('--ignore-fail-on-non-empty', action='store_true')
+    parser.add_argument('-p', '--parents', action='store_true')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('--help', action='store_true')
+    parser.add_argument('--version', action='store_true')
+
+    # Recursive flags (now no-ops mostly, but present for parsing)
+    parser.add_argument('-r', '--recursive', action='store_true')
+    parser.add_argument('-d', '--descendants', action='store_true', dest='recursive')
+
+    # Disable recursive flags
+    parser.add_argument('-D', '--no-descendants', action='store_true')
+    # Dry-run: do not actually remove anything, just report
+    parser.add_argument('--dry-run', action='store_true', dest='dry_run')
+
+    # Positional
+    parser.add_argument('directories', nargs='*')
+
+    # Parse
+    args, unknown = parser.parse_known_args()
+
+    if args.help:
+        # Show rmdir help followed by extensions
+        subprocess.run(["rmdir", "--help"])
+        print("\nirmdir extensions:")
+        print("  -d, -r, --descendants, --recursive   remove DIRECTORY and its descendants (default)")
+        print("  -D, --no-descendants                 do not remove descendants (standard rmdir behavior)")
+        sys.exit(0)
+
+    if args.version:
+        subprocess.call(["rmdir", "--version"])
+        print("irmdir 1.0 (with recursive extension)")
+        sys.exit(0)
+
+    if not args.directories:
+        print("irmdir: missing operand", file=sys.stderr)
+        print("Try 'irmdir --help' for more information.", file=sys.stderr)
+        sys.exit(1)
+
+    exit_code = 0
+
+    for directory in args.directories:
+        # Normalize path slightly (remove trailing slash for checking logic, specifically parent calculation)
+        path = directory.rstrip(os.path.sep)
+        if not path:
+            path = directory # If root '/', process as is (will fail safely likely)
+
+        if not os.path.isdir(path):
+            if os.path.exists(path):
+                 print(f"irmdir: failed to remove '{directory}': Not a directory", file=sys.stderr)
+            else:
+                 print(f"irmdir: failed to remove '{directory}': No such file or directory", file=sys.stderr)
+            exit_code = 1
+            continue
+
+        # 1. Recursive Removal (Always active in this block)
+        # Remove directories only. Never delete any files — only remove
+        # directory entries that contain no non-directory files/specials.
+        removed_any = False
+        would_remove = set()
+        try:
+            for root, dirnames, filenames in os.walk(path, topdown=False):
+                # Use a fresh listing so we observe actual on-disk state after child removals.
+                try:
+                    entries = os.listdir(root)
+                except OSError as e:
+                    if args.verbose:
+                        print(f"irmdir: cannot list '{root}': {e}")
+                    # Treat as a failure to remove this branch
+                    continue
+
+                # If there are any non-directory entries (files, symlinks to files, sockets, etc.),
+                # we must NOT delete them nor delete this directory. Treat symlinks as non-directories
+                # to avoid ever removing link targets or links themselves.
+                has_non_dir = False
+                for name in entries:
+                    fullname = os.path.join(root, name)
+                    if os.path.islink(fullname) or not os.path.isdir(fullname):
+                        has_non_dir = True
+                        break
+
+                if has_non_dir:
+                    if args.verbose:
+                        print(f"irmdir: skipping '{root}' (contains non-directory entries)")
+                    # Skip removing this directory but continue to try removing other branches
+                    continue
+
+                # Directory contains only directories (or is empty). Safe to attempt rmdir.
+                try:
+                    if args.dry_run:
+                        if args.verbose:
+                            print(f"irmdir: would remove directory, '{root}'")
+                        would_remove.add(os.path.abspath(root))
+                        removed_any = True
+                    else:
+                        if args.verbose:
+                            print(f"irmdir: removing directory, '{root}'")
+                        os.rmdir(root)
+                        removed_any = True
+                        would_remove.add(os.path.abspath(root))
+                except OSError as e:
+                    msg = str(e)
+                    if args.ignore_fail_on_non_empty and ("not empty" in msg or "Directory not empty" in msg):
+                        # Treat as non-fatal when ignoring non-empty
+                        pass
+                    else:
+                        print(f"irmdir: failed to remove '{root}': {e}", file=sys.stderr)
+                        exit_code = 1
+                        # continue attempting other removals
+                        continue
+
+            if not removed_any and args.verbose:
+                # If nothing was removed in the tree, report if desired
+                print(f"irmdir: nothing removed under '{directory}'")
+            # If nothing (or not everything) was removed because there are files/specials,
+            # report an explanatory message for the requested path (unless dry-run).
+            if not args.dry_run and os.path.exists(path):
+                # Find offending non-directory entries that prevented removal.
+                offenders = []
+                try:
+                    for root, dirnames, filenames in os.walk(path):
+                        # Check entries in this directory
+                        for name in os.listdir(root):
+                            fullname = os.path.join(root, name)
+                            # Treat symlinks and anything not a directory as an offender
+                            if os.path.islink(fullname) or not os.path.isdir(fullname):
+                                rel = os.path.relpath(fullname, start=path)
+                                offenders.append(rel)
+                                if len(offenders) >= 5:
+                                    break
+                        if len(offenders) >= 5:
+                            break
+                except Exception:
+                    # If we cannot walk/list, fall back to a generic message
+                    offenders = []
+
+                if offenders:
+                    sample = ', '.join(offenders)
+                    msg = f"irmdir: failed to remove '{directory}': contains non-directory entries: {sample}"
+                else:
+                    msg = f"irmdir: failed to remove '{directory}': contains non-directory entries"
+
+                if args.ignore_fail_on_non_empty:
+                    # When ignoring non-empty failures, do not mark as error, but print verbose note if requested
+                    if args.verbose:
+                        print(msg, file=sys.stderr)
+                else:
+                    # Print explanatory message but do not change exit code (preserve prior behavior)
+                    print(msg, file=sys.stderr)
+        except Exception as e:
+            print(f"irmdir: failed while processing '{directory}': {e}", file=sys.stderr)
+            exit_code = 1
+            continue
+
+        # 2. Process Parents (if -p)
+        if args.parents:
+            # Start from the direct parent of the directory we just removed
+            current_path = path
+            while True:
+                parent = os.path.dirname(current_path)
+
+                # Stop if we hit root or empty string (current dir context)
+                if not parent or parent == current_path or parent == os.path.sep:
+                    break
+
+                try:
+                    # Determine if parent would be empty after removing the directories
+                    try:
+                        p_entries = os.listdir(parent)
+                    except OSError as e:
+                        if args.verbose:
+                            print(f"irmdir: cannot list parent '{parent}': {e}")
+                        break
+
+                    non_removed_found = False
+                    for name in p_entries:
+                        fullname = os.path.abspath(os.path.join(parent, name))
+                        # If entry is in the set of directories we removed, ignore it; otherwise
+                        # if it's a non-directory or a directory we didn't remove, then parent is not empty.
+                        if fullname in would_remove:
+                            continue
+                        # If it's a symlink or not a dir, parent is not empty
+                        if os.path.islink(fullname) or not os.path.isdir(fullname):
+                            non_removed_found = True
+                            break
+                        # It's a directory but not scheduled for removal
+                        non_removed_found = True
+                        break
+
+                    if non_removed_found:
+                        # Parent not empty; stop attempting ancestors
+                        if not args.ignore_fail_on_non_empty:
+                            print(f"irmdir: failed to remove directory '{parent}': Directory not empty", file=sys.stderr)
+                            exit_code = 1
+                        break
+
+                    # Parent would be empty: remove or report depending on dry-run
+                    if args.dry_run:
+                        if args.verbose:
+                            print(f"irmdir: would remove directory, '{parent}'")
+                        would_remove.add(os.path.abspath(parent))
+                        current_path = parent
+                        continue
+                    else:
+                        if args.verbose:
+                            print(f"irmdir: removing directory, '{parent}'")
+                        os.rmdir(parent)
+                        current_path = parent
+                        continue
+                except OSError as e:
+                    if not args.ignore_fail_on_non_empty:
+                        print(f"irmdir: failed to remove directory '{parent}': {e.strerror}", file=sys.stderr)
+                        exit_code = 1
+                    break
+
+    sys.exit(exit_code)
+
+if __name__ == "__main__":
+    main()
