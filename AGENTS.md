@@ -27,6 +27,7 @@ for it. The command is exposed by a symlink in the repository root.
 ```text
 utils/
 ├── README.md              index of all tools (see below)
+├── .gitignore             ignores __pycache__/ and *.pyc
 ├── AGENTS.md              this file
 ├── CLAUDE.md              symlink -> AGENTS.md
 ├── GEMINI.md              symlink -> AGENTS.md
