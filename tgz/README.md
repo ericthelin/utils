@@ -171,6 +171,11 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 
 ## Troubleshooting
 
+- **Running `tgz` does something unexpected**: another program named `tgz` is
+  earlier on your `PATH`. The `mtools` package installs an unrelated `tgz`
+  (`command -v -a tgz` lists every match), and a shell function or alias can shadow
+  it too. Put this repository's `bin/` directory first on your `PATH`, or call it
+  as `/path/to/utils/bin/tgz`.
 - **`sh: 1: <tool>: not found`**: the extraction tool for that format is not
   installed; see the table under Usage.
 - **`unable to find type ... skipping it`**: the file is not a recognised
