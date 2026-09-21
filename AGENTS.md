@@ -53,6 +53,13 @@ utils/
 - **Symlinks are relative** (`ln -s ../make_dvd/make_dvd.py bin/make_dvd`) so the
   repository works wherever it is cloned. Never create absolute symlinks.
 - A tool with several commands gets one `bin/` symlink per command.
+- **Larger tools may be a package.** Keep a thin entry script in the tool
+  directory (which inserts its own directory on `sys.path` using `realpath`, so
+  it works when reached through a `bin/` symlink) and put the code in a
+  `<tool>lib/` package beside it. A design document (`DESIGN.md`) may sit next to
+  the README when the tool has decisions worth recording. One command may also
+  serve several names: `to_media` behaves as `to_mp3` when invoked through a
+  symlink of that name.
 - Put the implementation, its documentation and its tests inside the tool
   directory. Do not scatter tool files across the repository root.
 - Anything a tool needs at run time (data files, helper modules) lives in the
