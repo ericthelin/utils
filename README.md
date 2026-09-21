@@ -10,6 +10,7 @@ need and ignore the rest.
 | --- | --- |
 | [clip](clip/README.md) | One clipboard command for Linux, macOS and Windows shells: pipe text in, paste it anywhere. |
 | [dvd2iso](dvd2iso/README.md) | Copy a DVD in your drive into a single playable ISO, named from the disc. |
+| [git-pr](git_pr/README.md) | Push your branch and open the GitHub pull-request page in the right Chrome profile with `git pr`. |
 | [hist_search](hist_search/README.md) | A better Ctrl-R: fuzzy or regex search through your shell history, with no dependencies. |
 | [irmdir](irmdir/README.md) | `rmdir` that removes whole trees of empty folders and never touches a file. |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
