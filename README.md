@@ -9,6 +9,7 @@ need and ignore the rest.
 | Tool | What it does |
 | --- | --- |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
+| [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
 | [tgz](tgz/README.md) | Extract any archive into a tidy, correctly named folder without spilling files into the current directory. |
 
 ## Using a tool
