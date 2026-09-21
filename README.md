@@ -8,6 +8,7 @@ need and ignore the rest.
 
 | Tool | What it does |
 | --- | --- |
+| [hist_search](hist_search/README.md) | A better Ctrl-R: fuzzy or regex search through your shell history, with no dependencies. |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
 | [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
 | [plonk](plonk/README.md) | Install a downloaded Linux app (AppImage, `.deb`, Flatpak, source tarball or installer) with one command. |
