@@ -1,0 +1,416 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Data::Dumper;
+use File::Basename;
+use File::Path qw(make_path);
+use Term::ReadLine;
+
+my $options = process_options();
+
+$| = 1;
+
+my $tmpdir = $options->{temp};
+my $dev    = $options->{dev};
+my $out    = $options->{out};
+my $label  = $options->{label};
+$out = '.' if not defined($out) or $out eq '';
+
+my $outfile = basename($out);
+my $outdir  = dirname($out);
+
+# $SIG{INT} = \&catch_zap;
+
+if ( -d $out ) {
+
+    # print "1\n";
+    $outdir  = $out;
+    $outfile = '';
+} elsif ( -f $out ) {
+
+    # print "2\n";
+    $outfile = basename($out);
+    $outdir  = dirname($out);
+    warn "WARNING: About to overwrite $out!!\n";
+} elsif ( $out =~ /\.iso$/ ) {
+
+    # print "3\n";
+    $outfile = basename($out);
+    $outdir  = dirname($out);
+} else {
+
+    # print "4\n";
+    warn "CREATING directory $out\n";
+    make_path($out) if !$options->{dry_run};
+    $outdir  = $out;
+    $outfile = '';
+}
+
+# use Data::Dumper; warn '$out = ' .Dumper($out); # EKT
+# use Data::Dumper; warn '$outfile = ' .Dumper($outfile); # EKT
+# use Data::Dumper; warn '$outdir = ' .Dumper($outdir); # EKT
+
+my $tmp;
+
+$tmpdir = $outdir if not defined($tmpdir) or $tmpdir eq '';
+
+if ( -d $tmpdir ) {
+    my $cmd = "mktemp -d --tmpdir=" . $tmpdir . " " . basename($0) . ".XXXXXX";
+
+    # print "$cmd\n";
+    $tmp = `$cmd`;
+    chomp($tmp);
+    if ( not -d $tmp ) {
+        print STDERR usage( "Unable to create temp directory: " . ( $tmp || "''" ) );
+        exit;
+    }
+} elsif ( -e $tmpdir ) {
+    die "Cannot overwrite $tmpdir with temp files\n";
+} else {
+    $tmp = $tmpdir;
+}
+
+if ( not defined($dev) or $dev eq '' ) {
+    my @default_devices = ( 'dvd', 'sr0', 'cdrom', 'cdrw', 'cdr' );
+    for my $d (@default_devices) {
+        if ( -e '/dev/' . $d ) {
+            $dev = '/dev/' . $d;
+            last;
+        }
+    }
+}
+
+if ( not defined($dev) or not -e $dev ) {
+    print STDERR usage( "Invalid DVD device: " . ( $dev || "''" ) );
+    exit;
+}
+
+$SIG{INT} = \&catch_zap_early;
+
+my $dvdbackup = `which dvdbackup`;
+chomp($dvdbackup);
+if ( not $dvdbackup or $dvdbackup !~ /dvdbackup/ ) {
+
+    print STDERR usage( "dvdbackup not found: $dvdbackup\n" . "\tsudo aptitude install dvdbackup" );
+    exit;
+}
+
+my $genisoimage = `which genisoimage`;
+chomp($genisoimage);
+if ( not $genisoimage or $genisoimage !~ /genisoimage/ ) {
+
+    print STDERR usage( "genisoimage not found: $genisoimage\n" . "\tsudo aptitude install genisoimage" );
+    exit;
+}
+
+if ( not defined($outfile) or $outfile eq '' ) {
+    my $vol_label = cd_label($dev);
+    print "DVD Volume Label: $vol_label\n";
+
+    if ( uc($vol_label) eq 'DVD_VIDEO' ) {
+        $vol_label = '';
+    }
+    if ( uc($vol_label) eq $vol_label ) {
+        $vol_label = ucwords($vol_label);
+    }
+    $vol_label =~ s/_(WS|FS|16.?9|4.?3)$//i;
+
+    my $term   = Term::ReadLine->new($0);
+    my $prompt = "Please Enter Disk label: ";
+    my $file   = $term->readline( $prompt, $vol_label );
+
+    # print "Please Enter Disk label [$outfile]:";
+    # my $label = <stdin>;
+    # chomp($label);
+    if ( length($file) > 2 ) {
+        $outfile = $file;
+    }
+}
+
+if ( !defined($label) and length($outfile) == 0 ) {
+    $label = $outfile;
+}
+
+if ( defined($label) and length($label) > 32 ) {
+    print "Using " . substr( $label, 0, 32 ) . " as the disk label\n";
+}
+
+if ( defined($outdir) and $outdir ne '' and -d $outdir ) {
+    $outdir =~ s@/$@@;
+    if ( $outfile !~ /\.iso$/ ) {
+        $outfile .= '.iso';
+    }
+    $out = $outdir . '/' . $outfile;
+}
+print "Will create $out!\n";
+print "Temp directory is $tmp\n";
+print "\n";
+sleep 5 if !$options->{dry_run};
+
+# should check space on $tmp;
+# should check that $tmp exists or create it;
+# should check if $out is a file or a directory
+# should check if the output directory has
+
+$SIG{INT} = \&catch_zap;
+
+run( "mkdir -p " . cmd_enc($tmp) );
+print "dvdbackup: " . `date`;
+my @dvd_backup_args = ();
+push( @dvd_backup_args, '-M' );
+push( @dvd_backup_args, '-i ' . cmd_enc($dev) );
+push( @dvd_backup_args, '-o ' . cmd_enc($tmp) );
+if ($label) {
+    push( @dvd_backup_args, '-n ' . cmd_enc($label) );
+}
+
+run(
+    "$dvdbackup " . join( ' ', @dvd_backup_args ),
+    'dvdbackup: failed :(',
+    {
+        '^libdvdread: Elapsed time \d+'                               => 'ignore',
+        '^libdvdread: This can take a _long_ time, please be patient' => 'ignore',
+        '^libdvdread: Get key for'                                    => 'ignore',
+        '^libdvdread: Found \d+ VTS'                                  => 'ignore',
+        '^libdvdread: Using libdvdcss'                                => 'ignore',
+        '^libdvdread: Attempting to retrieve all CSS keys'            => 'ignore',
+        '^libdvdread: \s*$'                                           => 'ignore',
+        '^\s*$'                                                       => 'ignore',
+        'Error reading VTS_.*\.VOB at block \d?'                      => 'Error Reading a block',
+        'Error cracking CSS key for /VIDEO_TS/'                       => 'Error cracking CSS',
+    }
+);
+print "genisoimage: " . `date`;
+
+run( "genisoimage -quiet -dvd-video -o  " . cmd_enc($out) . " " . cmd_enc($tmp) . "/*", 'genisoimage: failed :(' );
+print "remove: " . `date`;
+
+run( "rm -r " . cmd_enc($tmp), 'removing temp directory: failed :(' );
+print "done: " . `date`;
+
+run( "eject " . cmd_enc($dev) ) if !$options->{no_eject};
+
+exit;
+
+sub run {
+    my $cmd           = shift;
+    my $error_message = shift;
+    my $output_filter = shift;
+
+    if ( $options->{verbose} or $options->{dry_run} ) {
+        print "\n" . $cmd . "\n";
+    }
+
+    my $status = 0;
+    if ( not $options->{dry_run} ) {
+        open( P, '-|', $cmd . " 2>&1" );
+      LINE:
+        while ( my $line = <P> ) {
+            chomp($line);
+            if ($output_filter) {
+
+                # print ".";
+                if ( ref($output_filter) eq 'HASH' ) {
+                    foreach my $key ( keys %{$output_filter} )
+
+                      # while(my ($key, $val) = each(%{$output_filter}))
+                    {
+                        my $val = $output_filter->{$key};
+                        if ( $line =~ m{$key} ) {
+                            print "MATCH found to :$key: for [[[$line]]] {$val}\n" if $options->{verbose} > 10;
+
+                            # print "ref=".ref($val)."\t$val\n";
+                            if ( ref($val) eq 'SUB' ) {
+                                &$val( $line, $cmd );
+                            } elsif ( ref($val) eq '' ) {
+
+                                # print "handling a string message\n";
+                                if ( $val eq 'next' or $val eq 'skip' or $val eq 'ignore' or $val eq '' ) {
+                                    print "ignoring: $line\n" if $options->{verbose} > 10;
+                                    next LINE;
+                                } else {
+                                    run( "eject " . cmd_enc($dev) ) if !$options->{no_eject};
+                                    print "dieing :(\n"             if $options->{verbose} > 10;
+                                    run( "rm -rf " . cmd_enc($tmp) . ' ' . cmd_enc($out), 'removing temp directory: failed :(' );
+                                    die( $val . " ($line)\n" );
+                                }
+                            }
+                            next;
+                        } else {
+
+                            # print "No Match for $key\t";
+                        }
+                    }
+                }
+                if ( ref($output_filter) eq '' and length($output_filter) > 0 and $line =~ m{$output_filter} ) {
+                    next;
+                }
+            }
+            print "$line\n";
+        }
+        close(P);
+
+        # system($cmd);
+        $status = $?;
+    }
+
+    if ( $error_message and $status != 0 ) {
+        run( "eject " . cmd_enc($dev) ) if !$options->{no_eject};
+        die $error_message;
+    }
+
+    return $status;
+}
+
+sub ucwords {
+    my $str = shift;
+    $str = lc($str);
+    $str =~ s/(\b|_)(\w)/$1\u$2/g;
+    return $str;
+}
+
+sub cmd_enc {
+    my $arg = shift;
+    $arg =~ s/([^a-z0-9._\/-])/\\$1/ig;
+    return $arg;
+}
+
+sub process_options {
+    my %options = ();
+    my @opts    = ( 'help|h', 'defaults|D=s', 'temp|t=s', 'dev|d=s', 'label|l=s', 'out|o=s', 'no_eject|E', 'dry_run|n', 'verbose|v+', );
+
+    Getopt::Long::Configure("gnu_getopt");
+    GetOptions( \%options, @opts );
+    if ( $options{help} ) { print usage(); exit(); }
+
+    my %opts_hash = map { s/\|.*$//; $_ => 1 } @opts;
+
+    my $rc_file;
+    if ( $options{defaults} ) {
+        $rc_file = $options{defaults};
+    } else {
+        my $script_base = fileparse( $0, '.pl' );
+        $rc_file = $ENV{HOME} . "/." . $script_base . "rc";
+    }
+    if ( -f $rc_file ) {
+        open( RC, '<', $rc_file ) || die "unable to open rc file ($rc_file)\n";
+        while ( my $line = <RC> ) {
+            chomp($line);
+            if ( $line =~ /^\s*#/ ) {
+                next;
+            } elsif ( $line =~ /^([a-z0-9_]+)\s*=\s*(.*)$/ ) {
+                my $var = $1;
+                my $val = $2;
+                if ( exists( $opts_hash{$var} ) and !$options{$var} ) {
+
+                    # print "$var exists and is empty[$line]\n";
+                    $options{$var} = $val;
+                }
+            } elsif ( exists( $opts_hash{$line} ) ) {
+
+                # print "full match [$line]\n";
+                $options{$line} = 1;
+
+            } else {
+
+                # print "???? [$line]\n";
+            }
+        }
+    } else {
+        print "didn't find $rc_file\n" if $options{verbose};
+    }
+
+    $options{verbose} ||= 0;
+    return \%options;
+}
+
+sub catch_zap {
+    print "Exiting\n";
+    my $term     = Term::ReadLine->new( $0 . ' catch_zap' );
+    my $prompt   = "Should the Temp dir and output iso be deleted: (Y/n)";
+    my $response = $term->readline( $prompt, 'Y' );
+
+    run( "eject " . cmd_enc($dev) ) if !$options->{no_eject};
+    if ( lc( substr( $response, 0, 1 ) ) ne 'n' ) {
+        run( "rm -rf " . cmd_enc($tmp) . ' ' . cmd_enc($out), 'removing temp directory: failed :(' );
+    }
+    exit;
+
+}
+
+sub catch_zap_early {
+    print "Exiting\n";
+    my $term = Term::ReadLine->new( $0 . ' catch_zap_early' );
+    if ( !$options->{no_eject} ) {
+        my $prompt   = "Eject: (Y/n)";
+        my $response = $term->readline( $prompt, 'Y' );
+
+        if ( lc( substr( $response, 0, 1 ) ) ne 'n' ) {
+            run( "eject " . cmd_enc($dev) );
+        }
+    }
+    exit;
+}
+
+sub cd_label {
+    my $dev = $_[0];
+    my $line;
+
+    my $max_attempts = 30;
+
+    my $attempts;
+    for ( $attempts = 0 ; $attempts < $max_attempts ; $attempts++ ) {
+        if ( open( CD, $dev ) ) {
+            last;
+        }
+        sleep 1;
+    }
+    if ( $attempts >= $max_attempts ) {
+        run( "eject " . cmd_enc($dev) ) if !$options->{no_eject};
+        die "Tried and failed to read the volume label\n";
+    }
+
+    if ( open( CD, $_[0] ) ) {
+        read CD, $line, 32808;    # skip beginning
+        read CD, $line, 30;
+
+        # print "find=".index($line,"Misc2")."\n";
+        # print "--[".$line."]--(".length($line).")\n";
+
+        $line =~ s/(^\s*|\s*$)//g;
+
+        # print "--[".$line."]--(".length($line).")\n";
+    }
+    return $line;
+}
+
+sub usage {
+    my $script_base = fileparse( $0, '.pl' );
+    my $rc_file     = $ENV{HOME} . "/." . $script_base . "rc";
+
+    my $error = shift;
+    if ($error) {
+        $error = 'ERROR: ' . $error;
+    } else {
+        $error = '';
+    }
+    return <<"HERE";
+Usage: $0 [options] <file>
+$error
+ --defaults, -D <file> Alternate Default config file (instead of $rc_file
+ --temp, -t <path>     Path to use for temporary folder (requires ~8GB free)
+                       (default: the output directory)
+ --out, -o <path>      Path and/or filename for iso output (requires ~8GB free)
+                       (default: the current directory)
+ --dev, -d <device>    DVD Device to rip from
+ --label, -l <label>   New Volume label
+ --no_eject, E         Don't eject the disk
+ --help, -h            This help message
+ --dry_run, -n         Dryrun
+ --verbose, -v         Show verbose output
+HERE
+
+}
