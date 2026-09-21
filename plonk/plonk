@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+import os
+import sys
+import argparse
+import shutil
+import subprocess
+from pathlib import Path
+
+
+# Helper functions
+def run(cmd, dryrun=False, verbose=False, **kwargs):
+    if verbose or dryrun:
+        print(' '.join(shlex_quote(a) for a in cmd))
+    if not dryrun:
+        return subprocess.run(cmd, check=True, **kwargs)
+    return 0
+
+def shlex_quote(s):
+    import shlex
+    return shlex.quote(str(s))
+
+def is_tgz(filename):
+    # Support all archive types handled by tgz.pl
+    tgz_exts = (
+        '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tar', '.tbz', '.tbz2', '.txz',
+        '.zip', '.rar', '.7z', '.tar.lz', '.tar.lzma', '.tar.Z', '.tar.zst', '.tar.zstd', '.tar.lzo', '.tar.lz4', '.tar.lrz', '.tar.lzop', '.tar.sz', '.tar.7z', '.tar.gzip', '.tar.bzip2', '.tar.z', '.tar.Z', '.tar.gz.uu', '.tar.bz2.uu', '.tar.xz.uu', '.tar.lzma.uu', '.tar.lz.uu', '.tar.lzo.uu', '.tar.lz4.uu', '.tar.sz.uu', '.tar.7z.uu', '.tar.gz2', '.tar.gzip2', '.tar.bz', '.tar.bz2', '.tar.bz3', '.tar.bzip3', '.tar.bz4', '.tar.bzip4', '.tar.bz5', '.tar.bzip5', '.tar.bz6', '.tar.bzip6', '.tar.bz7', '.tar.bzip7', '.tar.bz8', '.tar.bzip8', '.tar.bz9', '.tar.bzip9', '.tar.gz3', '.tar.gz4', '.tar.gz5', '.tar.gz6', '.tar.gz7', '.tar.gz8', '.tar.gz9', '.tar.xz2', '.tar.xz3', '.tar.xz4', '.tar.xz5', '.tar.xz6', '.tar.xz7', '.tar.xz8', '.tar.xz9', '.tar.lzma2', '.tar.lzma3', '.tar.lzma4', '.tar.lzma5', '.tar.lzma6', '.tar.lzma7', '.tar.lzma8', '.tar.lzma9', '.tar.lz2', '.tar.lz3', '.tar.lz4', '.tar.lz5', '.tar.lz6', '.tar.lz7', '.tar.lz8', '.tar.lz9', '.tar.lzo2', '.tar.lzo3', '.tar.lzo4', '.tar.lzo5', '.tar.lzo6', '.tar.lzo7', '.tar.lzo8', '.tar.lzo9', '.tar.sz2', '.tar.sz3', '.tar.sz4', '.tar.sz5', '.tar.sz6', '.tar.sz7', '.tar.sz8', '.tar.sz9', '.tar.7z2', '.tar.7z3', '.tar.7z4', '.tar.7z5', '.tar.7z6', '.tar.7z7', '.tar.7z8', '.tar.7z9', '.tar.Z2', '.tar.Z3', '.tar.Z4', '.tar.Z5', '.tar.Z6', '.tar.Z7', '.tar.Z8', '.tar.Z9', '.tar.zst2', '.tar.zst3', '.tar.zst4', '.tar.zst5', '.tar.zst6', '.tar.zst7', '.tar.zst8', '.tar.zst9', '.tar.zstd2', '.tar.zstd3', '.tar.zstd4', '.tar.zstd5', '.tar.zstd6', '.tar.zstd7', '.tar.zstd8', '.tar.zstd9', '.tar', '.zip', '.rar', '.7z', '.Z', '.gz', '.bz2', '.xz', '.lz', '.lzma', '.lzo', '.lz4', '.sz', '.zst', '.zstd', '.lrz', '.lzop', '.uu', '.gzip', '.bzip2', '.bzip3', '.bzip4', '.bzip5', '.bzip6', '.bzip7', '.bzip8', '.bzip9', '.gzip2', '.gz2', '.gz3', '.gz4', '.gz5', '.gz6', '.gz7', '.gz8', '.gz9', '.xz2', '.xz3', '.xz4', '.xz5', '.xz6', '.xz7', '.xz8', '.xz9', '.lzma2', '.lzma3', '.lzma4', '.lzma5', '.lzma6', '.lzma7', '.lzma8', '.lzma9', '.lz2', '.lz3', '.lz4', '.lz5', '.lz6', '.lz7', '.lz8', '.lz9', '.lzo2', '.lzo3', '.lzo4', '.lzo5', '.lzo6', '.lzo7', '.lzo8', '.lzo9', '.sz2', '.sz3', '.sz4', '.sz5', '.sz6', '.sz7', '.sz8', '.sz9', '.7z2', '.7z3', '.7z4', '.7z5', '.7z6', '.7z7', '.7z8', '.7z9', '.Z2', '.Z3', '.Z4', '.Z5', '.Z6', '.Z7', '.Z8', '.Z9', '.zst2', '.zst3', '.zst4', '.zst5', '.zst6', '.zst7', '.zst8', '.zst9', '.zstd2', '.zstd3', '.zstd4', '.zstd5', '.zstd6', '.zstd7', '.zstd8', '.zstd9'
+    )
+    lower = filename.lower()
+    return any(lower.endswith(ext) for ext in tgz_exts)
+
+def find_helper(name):
+    script_dir = Path(__file__).resolve().parent
+    for candidate in (script_dir / name, script_dir.parent / 'bin' / name):
+        if candidate.exists():
+            return str(candidate)
+    return name
+
+def is_appimage(filename):
+    return filename.lower().endswith('.appimage')
+
+def is_deb(filename):
+    return filename.lower().endswith('.deb')
+
+def create_launcher(exec_path, symlink_path, app_name, icon_path=None, dryrun=False, verbose=False):
+    """Create a .desktop launcher for the given executable."""
+    desktop_dir = Path.home() / '.local/share/applications'
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    desktop_file = desktop_dir / (app_name + '.desktop')
+    icon_line = f"Icon={icon_path}\n" if icon_path else ""
+    content = (
+        f"[Desktop Entry]\n"
+        f"Type=Application\n"
+        f"Name={app_name}\n"
+        f"Exec={shlex_quote(str(symlink_path if symlink_path else exec_path))}\n"
+        f"{icon_line}"
+        f"Terminal=false\n"
+        f"Categories=Utility;Application;\n"
+    )
+    if verbose or dryrun:
+        print(f"Creating launcher {desktop_file}\n{content}")
+    if not dryrun:
+        with open(desktop_file, 'w') as f:
+            f.write(content)
+        os.chmod(desktop_file, 0o755)
+    print(f"Launcher set: {desktop_file}\n  Exec: {symlink_path if symlink_path else exec_path}\n  Icon: {icon_path if icon_path else 'default'}")
+    return desktop_file
+
+def find_icon(appimage_path, extract_dir=None):
+    """Try to find an icon for the app."""
+    # 1. Try to extract from AppImage into ~/Applications/icons
+    if appimage_path and appimage_path.exists() and appimage_path.suffix.lower() == '.appimage':
+        import glob
+        icons_dir = Path.home() / 'Applications' / 'icons'
+        icons_dir.mkdir(parents=True, exist_ok=True)
+        extract_dir = icons_dir / (appimage_path.stem + '_icon_extract')
+        extracted = False
+        if not extract_dir.exists():
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                subprocess.run([str(appimage_path), '--appimage-extract'], cwd=extract_dir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                extracted = True
+            except Exception:
+                pass
+        # Look for .png or .svg icons in the extracted directory
+        icons = glob.glob(str(extract_dir / 'squashfs-root' / '**' / '*.png'), recursive=True)
+        icons += glob.glob(str(extract_dir / 'squashfs-root' / '**' / '*.svg'), recursive=True)
+        icon_path = None
+        if icons:
+            # Copy the first found icon to icons_dir with a unique name
+            icon_src = icons[0]
+            icon_ext = Path(icon_src).suffix
+            icon_dest = icons_dir / (appimage_path.stem + icon_ext)
+            try:
+                shutil.copy2(icon_src, icon_dest)
+                icon_path = str(icon_dest)
+            except Exception:
+                icon_path = icon_src
+        # Cleanup extract_dir if it was created in this run
+        if extract_dir.exists() and extracted:
+            try:
+                shutil.rmtree(extract_dir)
+            except Exception:
+                pass
+        if icon_path:
+            return icon_path
+    # 2. Look in extract_dir or appimage folder
+    search_dirs = []
+    if extract_dir:
+        search_dirs.append(extract_dir)
+    if appimage_path:
+        search_dirs.append(appimage_path.parent)
+    for d in search_dirs:
+        for ext in ('.png', '.svg', '.xpm', '.ico'):
+            for f in d.glob(f'*{ext}'):
+                return str(f)
+    # 3. Fallback to a standard icon
+    return 'application-x-executable'
+
+def main():
+
+    parser = argparse.ArgumentParser(description='Install AppImage, .deb, or build from archive')
+    parser.add_argument('file', help='File to install')
+    parser.add_argument('-n', '--dryrun', action='store_true', help='Dry run')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose')
+    parser.add_argument('--copy', action='store_true', help='Copy file instead of move/delete (default: move/delete)')
+    parser.add_argument('--no-prompt', action='store_true', help='Do not prompt to edit symlink name (default: prompt for new symlinks)')
+    args = parser.parse_args()
+
+    def is_flatpak(filename):
+        return filename.lower().endswith('.flatpak')
+
+    def find_icon_for_executable(exec_path):
+        """Search for an icon for the executable in likely locations."""
+        search_dirs = [exec_path.parent]
+        # If in a 'bin' or similar directory, also search parent and siblings
+        if exec_path.parent.name.lower() in ('bin', 'sbin', 'scripts', 'build', 'out'):
+            parent = exec_path.parent.parent
+            if parent.exists():
+                search_dirs.append(parent)
+                for sibling in parent.iterdir():
+                    if sibling.is_dir() and sibling != exec_path.parent:
+                        search_dirs.append(sibling)
+        # Add subdirectories
+        for d in list(search_dirs):
+            for sub in d.iterdir():
+                if sub.is_dir():
+                    search_dirs.append(sub)
+        # Search for icon files
+        for d in search_dirs:
+            for ext in ('.png', '.svg', '.xpm', '.ico'):
+                for f in d.glob(f'*{ext}'):
+                    return str(f)
+        return 'application-x-executable'
+
+    file_path = Path(args.file).expanduser().resolve()
+    if not file_path.exists():
+        print(f"File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if is_appimage(file_path.name):
+        app_dir = Path.home() / 'Applications'
+        app_dir.mkdir(parents=True, exist_ok=True)
+        dest = app_dir / file_path.name
+        # Copy or move AppImage
+        if args.copy:
+            if args.verbose or args.dryrun:
+                print(f"Copying {file_path} to {dest}")
+            if not args.dryrun:
+                shutil.copy2(file_path, dest)
+        else:
+            if args.verbose or args.dryrun:
+                print(f"Moving {file_path} to {dest}")
+            if not args.dryrun:
+                shutil.move(file_path, dest)
+        # Make executable
+        if args.verbose or args.dryrun:
+            print(f"chmod +x {dest}")
+        if not args.dryrun:
+            dest.chmod(dest.stat().st_mode | 0o111)
+        # Symlink with canonical name (remove version/platform info)
+        import re
+        def canonical_appimage_name(name):
+            platforms = [
+                'ubuntu', 'debian', 'fedora', 'arch', 'centos', 'opensuse',
+                'linuxmint', 'elementary', 'popos', 'manjaro', 'kali', 'raspbian',
+                'alpine', 'void', 'gentoo', 'endeavouros', 'zorin', 'mint',
+                'parrot', 'mx', 'redhat', 'rhel', 'oracle', 'rocky', 'alma',
+                'suse', 'tuxedo', 'garuda', 'clear', 'deepin', 'solus', 'nixos',
+                'slackware', 'mageia', 'sabayon', 'calculate', 'alt', 'bedrock',
+                'devuan', 'lxle', 'peppermint', 'q4os', 'bodhi', 'antix', 'artix',
+                'exherbo', 'funtoo', 'gobo', 'guix', 'hyperbola', 'kaos', 'linux',
+                'appimage'
+            ]
+            archs = [
+                'amd64', 'x86_64', 'x64', 'i386', 'i686', 'arm64', 'aarch64',
+                'armv7', 'armv8', 'ppc64le', 's390x', 'riscv64', 'win64', 'win32',
+                'windows', 'macos', 'osx', 'darwin', 'linux', 'appimage'
+            ]
+            n = name
+            plat_pat = r'[-_.]?(?:' + '|'.join(platforms) + r')[-_]?(\d+[.\d+]*)?'
+            n = re.sub(plat_pat, '', n, flags=re.I)
+            arch_pat = r'[-_.]?(?:' + '|'.join(archs) + r')($|[-_.])'
+            n = re.sub(arch_pat, '', n, flags=re.I)
+            n = re.sub(r'[-_.]?(v?(\d+[.-_])+\d+|PR-\d+|RC\d+|release[-_.]?\d+)', '', n, flags=re.I)
+            n = re.sub(r'[-_.]+$', '', n)
+            n = re.sub(r'\s+', '', n)
+            if not n.lower().endswith('.appimage'):
+                n += '.AppImage'
+            return n
+
+        base = canonical_appimage_name(file_path.name)
+        symlink = app_dir / base
+
+        symlink_exists = symlink.exists() or symlink.is_symlink()
+        if symlink_exists:
+            if args.verbose or args.dryrun:
+                print(f"Removing old symlink {symlink}")
+            if not args.dryrun:
+                symlink.unlink()
+
+        for f in app_dir.iterdir():
+            if f.is_symlink() and f.name.lower() == base.lower() and f != symlink:
+                if args.verbose or args.dryrun:
+                    print(f"Removing duplicate symlink {f}")
+                if not args.dryrun:
+                    f.unlink()
+
+        if not symlink_exists and not args.no_prompt:
+            try:
+                user_input = input(f"Symlink name [{base}]: ").strip()
+                if user_input:
+                    base = user_input
+                    symlink = app_dir / base
+            except (EOFError, KeyboardInterrupt):
+                print("\nSymlink creation cancelled.", file=sys.stderr)
+                return
+
+        if args.verbose or args.dryrun:
+            print(f"Symlinking {dest} to {symlink}")
+        if not args.dryrun:
+            symlink.symlink_to(dest)
+        print(f"Installed {dest} and symlinked as {symlink}")
+
+        # Create launcher
+        icon_path = find_icon(dest)
+        app_name = base.rsplit('.', 1)[0]
+        create_launcher(dest, symlink, app_name, icon_path, dryrun=args.dryrun, verbose=args.verbose)
+        return
+    # If the file is an existing executable (not AppImage, .deb, archive, or flatpak), prompt and create launcher
+    if os.access(file_path, os.X_OK) and file_path.is_file():
+        downloads_dir = Path.home() / 'Downloads'
+        if not str(file_path).startswith(str(downloads_dir)):
+            if not args.no_prompt:
+                resp = input(f"{file_path} seems to be an executable file. Do you want to create a launcher for it? [y/N] ").strip().lower()
+                if resp == '' or not resp.startswith('y'):
+                    print("Aborted by user.")
+                    return
+        # Try to find a symlink in ~/Applications, else use the file directly
+        app_dir = Path.home() / 'Applications'
+        symlink = None
+        if app_dir.exists():
+            for f in app_dir.iterdir():
+                if f.is_symlink() and f.resolve() == file_path:
+                    symlink = f
+                    break
+        app_name = file_path.stem
+        icon_path = find_icon_for_executable(file_path)
+        create_launcher(file_path, symlink, app_name, icon_path, dryrun=args.dryrun, verbose=args.verbose)
+        print(f"Launcher created for {file_path}")
+        return
+
+    if is_deb(file_path.name):
+        cmd = ['sudo', 'apt', 'install', str(file_path)]
+        try:
+            run(cmd, dryrun=args.dryrun, verbose=args.verbose)
+        except subprocess.CalledProcessError:
+            fix_cmd = ['sudo', 'apt', '--fix-broken', 'install']
+            print("Local .deb install failed; running apt fix-broken and retrying.")
+            run(fix_cmd, dryrun=args.dryrun, verbose=args.verbose)
+            run(cmd, dryrun=args.dryrun, verbose=args.verbose)
+        # Optionally delete .deb after install if not --copy
+        if not args.copy and not args.dryrun:
+            if args.verbose:
+                print(f"Deleting {file_path}")
+            file_path.unlink()
+        return
+
+    if is_flatpak(file_path.name):
+        cmd = ['flatpak', 'install', '--user', str(file_path)]
+        run(cmd, dryrun=args.dryrun, verbose=args.verbose)
+        print(f"Flatpak install command run for {file_path}")
+        return
+
+    if is_tgz(file_path.name):
+        # Extract archive using tgz.pl
+        extract_dir = Path.cwd() / (file_path.stem + '_extract')
+
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [find_helper('tgz'), str(file_path)]
+        run(cmd, dryrun=args.dryrun, verbose=args.verbose, cwd=extract_dir)
+        # Optionally delete archive after extraction if not --copy
+        if not args.copy and not args.dryrun:
+            if args.verbose:
+                print(f"Deleting {file_path}")
+            file_path.unlink()
+        # Look for build scripts
+        build_found = False
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f in ('Makefile', 'makefile', 'CMakeLists.txt', 'configure', 'build.sh'):
+                    build_found = True
+                    break
+            if build_found:
+                break
+        if build_found:
+            run([find_helper('mmmake')], dryrun=args.dryrun, verbose=args.verbose, cwd=root)
+        else:
+            print(f"Extracted to {extract_dir}, but no build script found.")
+        return
+
+    # If the file ends in .run, is executable, or `file` reports a script,
+    # make it executable (if needed) and run it.
+    handled = False
+    try:
+        if file_path.suffix.lower() == '.run':
+            if args.verbose or args.dryrun:
+                print(f"Setting +x and running {file_path}")
+            if not args.dryrun:
+                file_path.chmod(file_path.stat().st_mode | 0o111)
+                subprocess.run([str(file_path)], check=True)
+            handled = True
+        elif file_path.is_file():
+            # If already executable, run it
+            if os.access(file_path, os.X_OK):
+                if args.verbose or args.dryrun:
+                    print(f"Running executable {file_path}")
+                if not args.dryrun:
+                    subprocess.run([str(file_path)], check=True)
+                handled = True
+            else:
+                # Use `file` to detect scripts (bash, shell, python, perl, etc.)
+                try:
+                    out = subprocess.run(['file', '--brief', str(file_path)], capture_output=True, text=True)
+                    desc = out.stdout.lower()
+                    if any(k in desc for k in ('shell script', 'bash', 'sh script', 'python script', 'perl script', 'executable script', 'script')):
+                        if args.verbose or args.dryrun:
+                            print(f"Detected script by file(): {desc.strip()}")
+                            print(f"Setting +x and running {file_path}")
+                        if not args.dryrun:
+                            file_path.chmod(file_path.stat().st_mode | 0o111)
+                            subprocess.run([str(file_path)], check=True)
+                        handled = True
+                except Exception:
+                    pass
+    except subprocess.CalledProcessError as e:
+        print(f"Script failed: {e}", file=sys.stderr)
+        sys.exit(e.returncode)
+
+    if handled:
+        return
+
+    print(f"Unhandled file type: {file_path.suffix}", file=sys.stderr)
+    sys.exit(2)
+
+if __name__ == '__main__':
+    main()
