@@ -20,6 +20,7 @@ need and ignore the rest.
 | [tgz](tgz/README.md) | Extract any archive into a tidy, correctly named folder without spilling files into the current directory. |
 | [to_h264](to_h264/README.md) | Batch-convert videos to H.264/AAC with HandBrake, optionally spread across machines. |
 | [to_m4b](to_m4b/README.md) | Combine a folder of MP3 or Opus files into one chaptered audiobook (`.m4b`). |
+| [to_media](to_media/README.md) | Reshape audio, images and audiobooks from one format to another with one safe command; a job server for large batches is planned. |
 | [to_mp3](to_mp3/README.md) | Convert M4A, M4B, OGG, FLAC, WAV, WMA and Audible files to MP3, keeping the tags. |
 
 ## Using a tool
