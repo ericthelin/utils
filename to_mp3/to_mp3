@@ -1,0 +1,664 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Data::Dumper;
+use Getopt::Long;
+use File::Basename;
+use File::Temp qw(tempfile);
+use Cwd;
+use Try::Tiny;
+use Term::ANSIColor;
+
+my %options;
+Getopt::Long::Configure("gnu_getopt");
+GetOptions(
+    'help|h'               => \$options{help},
+    'lame|l=s'             => \$options{lame},
+    'ffmpeg|f=s'           => \$options{ffmpeg},
+    'skip_tag|s'           => \$options{skip_tag},
+    'keep|k'               => \$options{keep_original},
+    'dry_run|n'            => \$options{dry_run},
+    'verbose|v+'           => \$options{verbose},
+    'out_dir|d=s'          => \$options{out_dir},
+    'audiobook|a'          => \$options{audiobook},
+    'audible|A=s'          => \$options{audible},
+    'audible_keys|K=s'     => \$options{audible_keys},
+    'inaudible_tables|t=s' => \$options{inAudible_tables},
+    'chapters|c'           => \$options{chapters},
+) || help();
+
+help() if $options{help};
+
+if ( scalar(@ARGV) == 0 ) {
+    push( @ARGV, '.' );
+}
+
+my $lame_args   = "-h -V 3";
+my $ffmpeg_args = "-q:a 3";
+if ( $options{lame} ) {
+    warn "---WARNING--- setting lame args will not affect conversions that use ffmpeg\n";
+    $lame_args = $options{lame};
+} elsif ( $options{ffmpeg} ) {
+    warn "---WARNING--- setting ffmpeg args will not affect conversions that use lame\n";
+    $ffmpeg_args = $options{ffmpeg};
+} elsif ( $options{audiobook} ) {
+    $lame_args   = '-V 8 -mm';
+    $ffmpeg_args = "-q:a 8 -ac 1 -metadata genre=Audiobook";
+}
+
+$options{audible_keys} ||= ( $ENV{XDG_CONFIG_HOME} || "$ENV{HOME}/.config" ) . "/to_mp3/audible_keys";
+if ( !defined( $options{audible} ) ) {
+    $options{audible} = join( ' ', load_audible_keys( $options{audible_keys} ) );
+}
+if ( !defined( $options{inAudible_tables} ) ) {
+    $options{inAudible_tables} = $ENV{HOME} . "/bin/inAudible-NG-tables";
+}
+
+my %programs = (
+    'lame'     => 'lame',
+    'flac'     => 'flac',
+    'oggdec'   => 'vorbis-tools',
+    'metaflac' => 'flac',
+    'ogginfo'  => 'vorbis-tools',
+    'mp3info'  => 'mp3info',
+    'shnsplit' => 'shntool',
+    'cuetag'   => 'cuetools',
+    'ffmpeg'   => 'ffmpeg',
+);
+
+check_programs(%programs);
+
+my $args = '';
+
+for my $arg (@ARGV) {
+    $arg =~ s/([^A-Z0-9.-])/\\$1/gi;
+    $args .= ' ' . $arg;
+}
+
+if ( $options{out_dir} and !-d $options{out_dir} ) {
+    mkDir( $options{out_dir} );
+    print "Created $options{out_dir}\n" if $options{verbose};
+}
+
+my @files = `find $args`;
+
+foreach my $file (@files) {
+    chomp($file);
+    my $outfile      = $file;
+    my $originalSize = -s $file;
+    print color('yellow') . "\n  ~~~~~~~~~~~~~~~~~~~~ $file ~~~~~~~~~~~~~~~~~~~~\n" . color('reset');
+    my $cwd = getcwd();
+
+    if ( $options{out_dir} ) {
+        my $filename = basename($outfile);
+        $outfile = $options{out_dir} . '/' . $filename;
+    }
+
+    if ( $file =~ /\.m4[ab]$/i ) {
+        $outfile =~ s/m4[ab]$/mp3/i;
+
+        print "$file" if $options{verbose};
+
+        my $cmd_out = run( "ffmpeg -hide_banner -i " . cmd_escape($file) . " -codec:a libmp3lame $ffmpeg_args  -map_metadata 0 -id3v2_version 3 -write_id3v1 1 " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+            }
+        } else {
+            print " - ERROR\n" if $options{verbose};
+        }
+    } elsif ( $file =~ /\.ogg$/i ) {
+        $outfile =~ s/ogg$/mp3/i;
+
+        print "$file" if $options{verbose};
+        my $info_cmd     = "ogginfo " . cmd_escape($file);
+        my @ogg_info_out = `$info_cmd`;
+        if ( $? != 0 ) {
+            warn "Error: $file is not an ogg file\n";
+            next;
+        }
+
+        my %tag_info;
+        for my $line (@ogg_info_out) {
+            if ( $line =~ /(title|artist|genre|date|album|tracknumber|comment)=(.*)/i ) {
+                $tag_info{$1} = $2;
+            }
+        }
+        my $tag_args = get_id3_args( \%tag_info );
+
+        my $cmd_out = run( "oggdec " . cmd_escape($file) . " -o - |lame $lame_args $tag_args - " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+            }
+        }
+        print "\n" if $options{verbose};
+    } elsif ( $file =~ /\.flac$/i ) {
+        $outfile =~ s/flac$/mp3/i;
+
+        print "[[$file]]" if $options{verbose};
+
+        my $cueFile = $file;
+        $cueFile =~ s/flac$/cue/i;
+        if ( -f $cueFile ) {
+            my $outDir      = ( $options{out_dir} || '.' ) . '/' . dirname($file) . '/';
+            my $prefix      = "tmp-$$";
+            my $tmpCueFile  = "$prefix.cue";
+            my $tmpFlacFile = "$prefix.flac";
+
+            try {
+                chdir($outDir);
+                symlink( basename($cueFile), $tmpCueFile );
+                symlink( basename($file),    $tmpFlacFile );
+                print "CUE FILE ($cueFile)\n";
+                my $statusSplit = run("shnsplit -f $tmpCueFile -t '%n %p - %t' -o flac $tmpFlacFile -a $prefix-");
+                die "FLAC Split failed with exit code $statusSplit" if ( $statusSplit != 0 );
+                my $statusTag = run("cuetag $tmpCueFile $prefix-*.flac");
+                die "FLAC Tagging failed with exit code $statusTag" if ( $statusTag != 0 );
+                my @flacFiles = <"$prefix-*.flac">;
+
+                for my $f (@flacFiles) {
+                    my $newFlac = $f;
+                    $newFlac =~ s/$prefix-//;
+                    rename( $f, $newFlac );
+                    push( @files, $outDir . $newFlac );
+                }
+                print `pwd`;
+                print "unlink($file)\n";
+                print "unlink($cueFile)\n";
+                if ( scalar(@flacFiles) > 0 ) {
+                    print " flac split - done\n" if $options{verbose};
+                    if ( !$options{keep_original} ) {
+                        unlink( basename($file) )    || warn 'Error deleting original file: ' . $file . "($!)\n";
+                        unlink( basename($cueFile) ) || warn 'Error deleting original CUE file: ' . $cueFile . "($!)\n";
+                    }
+                }
+            } catch {
+                print "\n\nError: $_\n";
+            } finally {
+                unlink($tmpCueFile);
+                unlink($tmpFlacFile);
+                chdir($cwd);
+            };
+
+            # abort this flac so we can process the individual files
+            next;
+        }
+
+        my $info_cmd      = 'metaflac --export-tags-to=- ' . cmd_escape($file);
+        my @flac_info_out = `$info_cmd`;
+        if ( $? != 0 ) {
+            warn "Error: $file is not a flac file\n";
+            next;
+        }
+
+        my %tag_info;
+        for my $line (@flac_info_out) {
+            if ( $line =~ /(title|artist|genre|date|album|tracknumber|comment)=(.*)/i ) {
+                $tag_info{$1} = $2;
+            }
+        }
+
+        my $tag_args = get_id3_args( \%tag_info );
+        my $cmd_out  = run( "flac -dc " . cmd_escape($file) . " | lame $lame_args $tag_args - " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+            }
+        }
+        print "\n" if $options{verbose};
+    } elsif ( $file =~ /\.wma$/i ) {
+        $outfile =~ s/wma$/mp3/i;
+        my $tmpfile = $outfile;
+        $tmpfile =~ s/mp3$/wav/i;
+
+        print "$file" if $options{verbose};
+        my $cmd_out = run( "ffmpeg -hide_banner -i " . cmd_escape($file) . " -codec:a libmp3lame $ffmpeg_args  -map_metadata 0 -id3v2_version 3 -write_id3v1 1 " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+            }
+        } else {
+            print " - ERROR\n" if $options{verbose};
+        }
+    } elsif ( $file =~ /\.(wav|aiff)$/i ) {
+        $outfile =~ s/(wav|aiff)$/mp3/i;
+
+        print "$file" if $options{verbose};
+        my $cmd_out = run( "lame $lame_args " . cmd_escape($file) . " " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+            }
+        }
+        print "\n" if $options{verbose};
+    } elsif ( $file =~ /\.(aa|aax)$/i ) {
+        $outfile =~ s/(_ep6_[a-zA-Z0-9]+_[a-zA-Z0-9]+)?\.(aax?)$/.mp3/i;
+
+        print "$file" if $options{verbose};
+        my $success = 0;
+
+        # TODO: 'ffprobe -i ' . cmd_escape($file) . ' -print_format json -show_chapters -sexagesimal'
+        # https://unix.stackexchange.com/questions/499179/using-ffmpeg-to-split-an-audible-audio-book-into-chapters
+        my $cmd      = "ffmpeg -i " . cmd_escape($file) . " 2>&1";
+        my $meta_out = `$cmd`;
+
+        # print "$cmd\n\n";
+        # print "[[" . $meta_out . "]]\n";
+        my @metadataLines = split /\n/, $meta_out;
+        my @chapters      = ();
+        my %info          = ();
+        my $chapterNo     = 0;
+        for ( my $i = 0 ; $i < $#metadataLines ; $i++ ) {
+            my $line = $metadataLines[$i];
+            if ( $line =~ /^\s+(creation_time|genre|title|artist|album_artist|album|comment|copyright|date|bitrate)\s+:\s+(.*$)/ ) {
+                my $key = $1;
+                $info{$key} = $2;
+                if ( $info{$key} =~ /\(?Unabridged\)?/i ) {
+                    $info{$key} =~ s/ *\(?Unabridged\)?//i;
+                }
+            }
+            if ( $line =~ /Chapter #.* start ([0-9.]*), end ([0-9.]*)/ ) {
+                $chapterNo++;
+                my %chapter = ( 'start' => $1, 'end' => $2 );
+                if ( $metadataLines[ $i + 2 ] =~ /^\s*title\s*: (.*$)/ ) {
+                    $i += 2;
+                    $chapter{title} = $1;
+                } else {
+                    $chapter{title} = $chapterNo;
+                }
+                $chapter{number} = $chapterNo;
+                push( @chapters, \%chapter );
+            }
+        }
+        my $outDir;
+        my $seriesPart = "";
+        if ( $info{title} =~ /(.+?)(: (.+), Book (\d+))/ ) {
+            $outDir     = $info{artist} . '/' . $3 . '/' . sprintf( "%02d", $4 ) . " $1";
+            $seriesPart = $2;
+        } else {
+            my $title = $info{title};
+            $title =~ s#[\\<>\"|?*:,/]#_#g;
+            $outDir = $info{artist} . '/' . $title;
+        }
+
+        # use Data::Dumper; warn Dumper(\%info); # EKT
+        # use Data::Dumper; warn Dumper(\@chapters); # EKT
+        # exit;
+
+        if ( $options{out_dir} ) {
+            $outDir = $options{out_dir} . '/' . $outDir;
+        }
+        $outDir =~ s#[\\<>\"|?*:,]#_#g;
+        mkDir($outDir) if !$options{dry_run};
+
+        # print "outDir = $outDir\n";
+        # print "seriesPart = $seriesPart\n";
+        # exit;
+
+        my $audibleKey;
+        foreach my $bytes ( split / /, $options{audible} ) {
+            my $cmd     = 'ffmpeg -loglevel warning -activation_bytes ' . $bytes . ' -i ' . cmd_escape($file) . ' /dev/null';
+            my $cmd_out = run_output($cmd);
+
+            # print "{{$cmd_out}} $bytes\n";
+            if ( $cmd_out !~ /mismatch in checksums!/ ) {
+                $audibleKey = $bytes;
+                last;
+            }
+        }
+        if ( !defined($audibleKey) && defined( $options{inAudible_tables} ) ) {
+            my $cmd     = "cd $options{inAudible_tables};./rcrack . -h \$(ffprobe " . cmd_escape( $cwd . '/' . $file ) . " 2>&1 |grep checksum|sed -e 's/^.*== //')";
+            my $cmd_out = run_output($cmd);
+
+            # print "$cmd {{$cmd_out}}\n";
+            if ( $cmd_out =~ /hex:([0-9a-f]*)/ ) {
+                $audibleKey = $1;
+            }
+        }
+        if ( !defined($audibleKey) ) {
+            die( "\n\n" . color("bold red") . "Unable to find an audible key to decode $file (keys are read from $options{audible_keys})" . color("reset") . "\n\n" );
+        }
+
+        print "audibleKey = [$audibleKey]\n" if ( $options{verbose} );
+
+        my $successTarget = 1;
+        if ( $options{chapters} ) {
+            $successTarget = scalar(@chapters);
+            for my $chapter (@chapters) {
+
+                # while (my ($idx, $chapter) = each(@chaptersRaw)) {
+                # for my $chapter (@chaptersRaw) {
+
+                my $title = $info{title};
+                if ( defined($seriesPart) ) {
+                    $title =~ s/\Q$seriesPart\E//;
+                }
+
+                $title =~ s#[\\<>\"|?*:,/]#_#g;
+                my $outfile = sprintf( "%s/%02d %s - %s.mp3", $outDir, $chapter->{number}, $title, $chapter->{title} );
+
+                print color('yellow') . "    $chapter->{number}: $chapter->{title} / $successTarget" . color('reset') . "\n";
+
+                my $id3_args =
+                    ' --add-id3v2 '
+                  . ' --tt '
+                  . cmd_escape( $chapter->{title} )
+                  . ' --ta '
+                  . cmd_escape( $info{artist} )
+                  . ' --tl '
+                  . cmd_escape( $info{album} )
+                  . ' --tg '
+                  . cmd_escape( $info{genre} )
+                  . ' --ty '
+                  . cmd_escape( $info{date} )
+                  . ' --tc '
+                  . cmd_escape( $info{comment} )
+                  . ' --tn '
+                  . ( $chapter->{number} + 0 );
+
+                my $logLevel = "-loglevel error";
+                if ( $options{verbose} ) {
+                    if ( $options{verbose} > 1 ) {
+                        $logLevel = "-loglevel warning";
+                    } else {
+                        $logLevel = "-loglevel verbose";
+                    }
+                }
+
+                my $cmd_status;
+                if ( defined( $options{use_temp_file} ) ) {
+
+                    # this is an unfinished idea to provide a progress update from lame
+                    my ( undef, $temp ) = tempfile('to_mp3.XXXX');
+                    my $cmd_out =
+                      run(  "ffmpeg $logLevel -activation_bytes "
+                          . $audibleKey . " -i "
+                          . cmd_escape($file) . " -ss "
+                          . $chapter->{start} . " -to "
+                          . $chapter->{end}
+                          . " -f wav $temp; lame $lame_args $id3_args $temp "
+                          . cmd_escape($outfile) );
+                    $cmd_status = $?;
+                    unlink($temp);
+                } else {
+                    my $cmd_out =
+                      run(  "ffmpeg $logLevel -activation_bytes "
+                          . $audibleKey . " -i "
+                          . cmd_escape($file) . " -ss "
+                          . $chapter->{start} . " -to "
+                          . $chapter->{end}
+                          . " -f wav - | lame --quiet $lame_args $id3_args - "
+                          . cmd_escape($outfile) );
+                    $cmd_status = $?;
+                }
+                if ( $cmd_status == 0 && -f "$outfile" && -s "$outfile" > 0 ) {
+                    $success++;
+                } elsif ( !$options{dry_run} ) {
+                    print color('bold red') . "FAIL :( -- ";
+                    if ( $? != 0 ) {
+                        print " cmd failed ($?)" . color('reset');
+                    }
+                    if ( !-f "$outfile" ) {
+                        print " cmd failed ($outfile) does not exist";
+                    }
+                    if ( -s "$outfile" eq 0 ) {
+                        print " cmd failed ($outfile) empty";
+                    }
+                    print "[cwd: " . $cwd . "]" . color('reset');
+                    print "\n";
+
+                    # last;
+                }
+            }
+
+            # exit;
+        } else {
+            my $id3_args =
+                ' --add-id3v2 '
+              . ' --tt '
+              . cmd_escape( $info{title} )
+              . ' --ta '
+              . cmd_escape( $info{artist} )
+              . ' --tl '
+              . cmd_escape( $info{album} )
+              . ' --tg '
+              . cmd_escape( $info{genre} )
+              . ' --ty '
+              . cmd_escape( $info{date} )
+              . ' --tc '
+              . cmd_escape( $info{comment} );
+
+            my $cmd_out = run( "ffmpeg -activation_bytes " . $audibleKey . " -i " . cmd_escape($file) . " -f wav - | lame $lame_args $id3_args - " . cmd_escape($outfile) );
+            if ( $? == 0 && -f "$outfile" && -s "$outfile" > 0 ) {
+                $success = 1;
+            }
+        }
+        if ( $success == $successTarget ) {
+            print " - " . color('bold green') . "done\n" . color('reset') if $options{verbose};
+            if ( !$options{keep_original} && !$options{dry_run} ) {
+                unlink($file) || warn color('red') . 'Error deleting original file: ' . $file . "($!)\n" . color('reset');
+            }
+        }
+        print "\n" if $options{verbose};
+    } elsif ( $file =~ /\.mp3$/i ) {
+        if ( !$options{out_dir} ) {
+            $outfile =~ s/mp3$/new.mp3/i;
+        }
+
+        print "$file" if $options{verbose};
+        my $info_cmd     = 'mp3info ' . cmd_escape($file);
+        my @mp3_info_out = `$info_cmd`;
+        if ( $? != 0 ) {
+            my $file_cmd  = 'file ' . cmd_escape($file);
+            my $file_desc = run_output($file_cmd);
+            if ( $file_desc !~ /(Audio.*MPEG.*layer I+|MPEG ADTS, layer III|Audio file with ID3)/i ) {
+                warn $file_cmd . "\n";
+                warn "Error: $file is not an mp3 file\n";
+                warn "($file_desc)\n\n";
+                next;
+            }
+        }
+
+        my %tag_info;
+        for my $line (@mp3_info_out) {
+            if ( $line =~ /Title:\s*(.*?)(\s*Track:.*)?$/ ) {
+                $tag_info{title} = $1;
+            }
+            if ( $line =~ /Artist:\s*(.*)/ ) {
+                $tag_info{artist} = $1;
+            }
+            if ( $line =~ /Album:\s*(.*?)(\s*Year:.*)?$/ ) {
+                $tag_info{album} = $1;
+            }
+            if ( $line =~ /Year:\s*(.*)/ ) {
+                $tag_info{date} = $1;
+            }
+            if ( $line =~ /Track:\s*(\d+)/ ) {
+                $tag_info{tracknumber} = $1;
+            }
+            if ( $line =~ /Genre:\s*(.*)/ ) {
+                $tag_info{genre} = $1;
+            }
+            if ( $line =~ /Comment:\s*(.*?)(\s*Genre:.*)?$/ ) {
+                $tag_info{comment} = $1;
+            }
+        }
+        my $tag_args = get_id3_args( \%tag_info );
+
+        print "$file" if $options{verbose};
+        my $cmd_out = run( "lame $lame_args $tag_args " . cmd_escape($file) . " " . cmd_escape($outfile) );
+        if ( $? == 0 && -f $outfile && -s $outfile > 0 ) {
+            print " - done\n" if $options{verbose};
+            if ( !$options{keep_original} ) {
+                unlink($file) || warn 'Error deleting original file: ' . $file . "($!)\n";
+                if ( !$options{out_dir} ) {
+                    rename( $outfile, $file );
+                }
+            }
+        }
+        print "\n" if $options{verbose};
+
+        my $newSize = -s $file;
+        printf( "\n  ~~~~~ $file    before: %s KB after: %s KB (%2.1f%%)\n\n\n", commify( int( $originalSize / 1024 ) ), commify( int( $newSize / 1024 ) ), $newSize / $originalSize * 100 );
+    }
+
+}
+
+# One or more activation keys (hex) per line; '#' starts a comment.
+sub load_audible_keys {
+    my $file = shift;
+    open( my $fh, '<', $file ) or return ();
+    my @keys;
+    while ( my $line = <$fh> ) {
+        $line =~ s/#.*//;
+        $line =~ s/^\s+|\s+$//g;
+        push( @keys, split( /\s+/, $line ) ) if length($line);
+    }
+    close($fh);
+    return @keys;
+}
+
+sub help {
+    warn <<"END"
+Usage: $0 [options] <files or directories>
+    --help, -h             This message
+    --lame, -l <args>      Lame args for quality and such
+    --ffmpeg, -f <args>    ffmpeg args for quality and such
+    --audiobook, -a        Use presets for audiobooks
+    --audible, -A <keys>   Audible activation bytes (space separated); overrides the keys file
+    --audible_keys, -K <file>  File of activation bytes, one per line
+                                   (default: ~/.config/to_mp3/audible_keys)
+    --inaudible_tables, -t <token> directory of inAudible_tables checkout
+                                   https://github.com/inAudible-NG/tables
+                                   (default: ~/bin/inAudible-NG-tables)
+    --chapters, -c         Split audible book into chapters
+    --skip_tag, -s         Skip ID3 tags
+    --out_dir, -d <dir>    Alternate directory for converted files
+    --keep, -k             Keep original
+    --dry_run, -n          Dry run.  Don't actually convert file(s)
+    --verbose, -v          Verbose.  Show more output
+END
+      ;
+    exit 1;
+}
+
+sub run {
+    my $cmd = shift;
+    if ( $options{verbose} or $options{dry_run} ) {
+        print "\n" . color("bold blue") . $cmd . color("reset") . "\n";
+    }
+
+    if ( !$options{dry_run} ) {
+        system($cmd);
+    }
+    return $?;
+}
+
+# run even with dry_run flag (should not write anything)
+sub run_forced {
+    my $cmd = shift;
+    if ( $options{verbose} or $options{dry_run} ) {
+        print "\n" . color("bold blue") . $cmd . color("reset") . "\n";
+    }
+
+    system($cmd);
+    return $?;
+}
+
+sub run_output {
+    my $cmd = shift;
+    if ( $options{verbose} or $options{dry_run} ) {
+        print "\n" . color("bold blue") . $cmd . color("reset") . "\n";
+    }
+
+    my $result = `$cmd 2>&1`;
+    if ( ( defined( $options{verbose} ) and $options{verbose} > 1 ) or $options{dry_run} ) {
+        print "\n" . color("yellow") . $result . color("reset") . "\n";
+    }
+    return $result;
+}
+
+sub check_programs {
+    my %programs = @_;
+
+    my @suggestions;
+    for my $prog ( keys(%programs) ) {
+        `which $prog`;
+        if ($?) {
+            warn "Warning: $prog not found $programs{$prog}\n";
+            push( @suggestions, $programs{$prog} );
+        }
+    }
+    if ( scalar(@suggestions) > 0 ) {
+        warn "\nMissing possibly required programs:\n\tsudo apt install " . join( ' ', @suggestions ) . "\n\n";
+
+        warn "Proceed: (Y/n)\n";
+        my $response = <STDIN>;
+        if ( $response =~ /^[nN]/ ) {
+            exit;
+        }
+        print "response : $response\n";
+    }
+}
+
+sub get_id3_args {
+    my $info     = shift;
+    my %tag_cmds = (
+        'title'       => '--tt ',
+        'artist'      => '--ta ',
+        'album'       => '--tl ',
+        'date'        => '--ty ',
+        'comment'     => '--tc ',
+        'tracknumber' => '--tn ',
+        'genre'       => '--tg ',
+    );
+
+    my $tag_opts = '';
+    if ( scalar( keys( %{$info} ) ) ) {
+        for my $field ( keys( %{$info} ) ) {
+            my $value = $info->{$field};
+            print "$field=$value --- " . $tag_opts . "\n" if $options{verbose} && $options{verbose} > 1;
+            $value =~ s/([^a-zA-Z0-9_])/\\$1/g;
+            $value =~ s/\s*(.*?)\s*/$1/;
+
+            # $value=~s/\'/\\\'/g;
+            if ( $value ne '' ) {
+                $tag_opts .= ' ' . $tag_cmds{ lc($field) } . $value;
+            }
+        }
+        if ( $tag_opts ne '' ) {
+            $tag_opts .= ' --add-id3v2';
+        }
+    }
+
+    warn 'info=' . Dumper($info)        if $options{verbose} && $options{verbose} > 1;
+    warn 'tag_opts=' . $tag_opts . "\n" if $options{verbose} && $options{verbose} > 1;
+
+    return $tag_opts;
+
+}
+
+sub cmd_escape {
+    my $str = shift;
+    $str =~ s/([^A-Z0-9.\/-])/\\$1/gi;
+    return $str;
+}
+
+sub mkDir {
+    my $dir = $_[0];
+    my $cmd = "mkdir -p " . cmd_escape($dir);
+    print `$cmd` if !$options{dry_run};
+}
+
+sub commify {
+    my $text = reverse $_[0];
+    $text =~ s/(\d\d\d)(?=\d)(?!\d*\.)/$1,/g;
+    return scalar reverse $text;
+}

@@ -12,6 +12,7 @@ need and ignore the rest.
 | [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
 | [plonk](plonk/README.md) | Install a downloaded Linux app (AppImage, `.deb`, Flatpak, source tarball or installer) with one command. |
 | [tgz](tgz/README.md) | Extract any archive into a tidy, correctly named folder without spilling files into the current directory. |
+| [to_mp3](to_mp3/README.md) | Convert M4A, M4B, OGG, FLAC, WAV, WMA and Audible files to MP3, keeping the tags. |
 
 ## Using a tool
 
