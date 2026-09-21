@@ -86,11 +86,14 @@ def run_one(recipe, job, policy, progress=None):
     if os.path.exists(job.output) and not policy.force:
         return "skipped", "output exists (use --force to overwrite)"
     if policy.dry_run:
-        return "planned", recipe.describe(job)
+        try:
+            return "planned", recipe.describe(job)
+        except RecipeError as error:
+            return "failed", str(error)
     tmp = partial_path(job.output)
     try:
         os.makedirs(os.path.dirname(job.output) or ".", exist_ok=True)
-        recipe.run(job, tmp, progress)
+        notes = recipe.run(job, tmp, progress) or []
         if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             raise RecipeError("the converter produced no output")
         os.replace(tmp, job.output)
@@ -103,7 +106,7 @@ def run_one(recipe, job, policy, progress=None):
         for path in job.inputs:
             if not same_file(path, job.output):
                 os.unlink(path)
-    return "done", ""
+    return "done", "\n".join(f"note: {note}" for note in notes)
 
 
 def run_jobs(recipe, jobs, policy, out=None):
@@ -116,9 +119,12 @@ def run_jobs(recipe, jobs, policy, out=None):
         status, detail = run_one(recipe, job, policy, bar.update)
         bar.finish()
         counts[status] += 1
-        if status == "planned":
-            print(f"    {detail}", file=out)
-        elif status != "done" or policy.verbose:
+        if status in ("planned", "done"):
+            if status == "done" and policy.verbose:
+                print("    done", file=out)
+            for text in detail.splitlines():
+                print(f"    {text}", file=out)
+        else:
             print(f"    {status}: {detail}" if detail else f"    {status}", file=out, flush=True)
     summary = ", ".join(f"{n} {name}" for name, n in counts.items() if n)
     print(f"{summary or 'nothing to do'} in {format_duration(time.monotonic() - started)}", file=out)

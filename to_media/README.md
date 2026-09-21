@@ -96,7 +96,7 @@ Reads FLAC, WAV, AIFF, M4A/M4B, AAC, OGG/Opus, WMA, WavPack and Monkey's Audio.
 
 ### `h264`
 
-H.264 video with AAC audio in an `.mp4`, encoded with ffmpeg.
+H.264 video with AAC audio in an `.mp4` (or `.mkv`), encoded with ffmpeg.
 
 | Option | Meaning |
 | --- | --- |
@@ -111,9 +111,36 @@ H.264 video with AAC audio in an `.mp4`, encoded with ffmpeg.
 
 Chapters, metadata and **every** audio track are kept; the video is converted to
 the widely playable `yuv420p` format. Reads MKV, AVI, MOV, M4V, WMV, FLV, WebM,
-MPEG, TS/M2TS, VOB, 3GP and more. `.mp4` files found while scanning a folder are
-skipped (they would land on top of themselves); name one explicitly with `--out`
-to re-encode it.
+MPEG, TS/M2TS, VOB, 3GP and more. Files that already have the output's extension
+(`.mp4`, or `.mkv` with `--container mkv`) are skipped when found in a folder,
+because they would land on top of themselves; name one explicitly with `--out` to
+re-encode it.
+
+#### Subtitles
+
+| Option | Meaning |
+| --- | --- |
+| `--subtitles keep\|none` | Keep subtitle tracks (default) or drop them. |
+| `--burn-subtitles [TRACK]` | Hard-code one subtitle track into the picture, by number (`0` is the first and the default) or by language (`eng`, `fr`). Other subtitle tracks are then dropped. |
+| `--container mp4\|mkv` | `mp4` (default) can hold text subtitles only. `mkv` keeps every subtitle track exactly as it is, including image subtitles and the fonts embedded for styled ones. |
+
+What happens by default:
+
+- **Text subtitles** (SubRip/SRT, ASS/SSA, WebVTT and similar) are converted to
+  the MP4 text format and kept, with their languages, titles and default/forced
+  flags. Fancy ASS styling (fonts, colours, positioning) does not survive that
+  conversion; use `--container mkv` or `--burn-subtitles` to keep the look.
+- **Image subtitles** (Blu-ray PGS, DVD VobSub, DVB) cannot be stored in an MP4.
+  They are left out **and you are told**: a `note:` line names the tracks and
+  points at `--burn-subtitles` and `--container mkv`, so a disc rip never loses its
+  subtitles silently.
+- **A track that will not convert** does not cost you the file. If ffmpeg fails
+  while converting subtitles, the file is converted again without them and a
+  `note:` says why.
+- **Burning in** works for both kinds: text subtitles are rendered with libass,
+  image subtitles are overlaid, and either way the result plays anywhere. The
+  burned-in text is part of the picture and cannot be turned off. It needs an
+  ffmpeg with the `subtitles` filter (libass) for text tracks.
 
 ### `m4b`
 
@@ -160,6 +187,9 @@ converting a folder.
   `--out`.
 - **Images** are rotated to their intended orientation and keep their metadata
   unless `--strip`.
+- **Notes.** When something was deliberately left out or worked around (image
+  subtitles that MP4 cannot hold, a subtitle track that would not convert), a
+  `note:` line under the file says so, whether or not you used `-v`.
 - **Progress.** On a terminal each file shows a live bar with the percentage,
   elapsed time and estimated time remaining, cleared when the file finishes.
   When output is redirected to a file or pipe, only the per-file lines are printed.
@@ -253,8 +283,8 @@ To use a short alias, link the program under the alias name, for example
 own `bin/to_mp3`, `bin/to_m4b` and `bin/to_h264` are still the older standalone
 tools; they will become aliases of `to_media` once it matches their features.
 Note that `to_media h264` differs from the old `to_h264`: it uses ffmpeg (not
-HandBrake), writes `.mp4` (not `.m4v`), keeps originals unless `--replace`, and
-defaults to the source's size (use `--profile fast720` for the old 720p default).
+HandBrake), writes `.mp4` (not `.m4v`), keeps originals unless `--replace`, keeps
+subtitles (see above), and defaults to the source's size (use `--profile fast720` for the old 720p default).
 
 ## Troubleshooting
 
@@ -271,7 +301,10 @@ defaults to the source's size (use `--profile fast720` for the old 720p default)
 ## Limitations
 
 - Only mp3, h264, m4b, jpg, png and webp so far; more formats are planned.
-- Subtitle tracks are not copied into h264 output.
+- Burning in an **image** subtitle track (PGS, VobSub) is implemented but has not
+  been run against a real bitmap subtitle file: ffmpeg cannot create one for the
+  automated tests, so that path is covered only by tests of the command it builds.
+  Text-subtitle keeping, MKV, and text burn-in are tested on real files.
 - h264 uses ffmpeg, not HandBrake, so HandBrake presets and DVD "main feature"
   selection are not available; rip discs with `dvd2iso` first.
 - Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums,

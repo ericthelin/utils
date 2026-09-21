@@ -54,6 +54,17 @@ turns it into a live bar with an estimate. A worker will pass a callback that
 reports the same fraction to the server, so inline and queued runs share one code
 path.
 
+### Subtitles (h264)
+
+MP4 holds only text subtitles, so the plan for each file depends on what is in it:
+text tracks become `mov_text` and are kept; image tracks (PGS, VobSub, DVB) cannot
+go in an MP4 and produce a visible `note:` rather than vanishing; the MKV
+container keeps everything; `--burn-subtitles` renders one track into the
+picture (libass for text, an overlay for images). Recipes may return notes from
+`run`, which the runner prints even without `-v`, and a failed subtitle
+conversion retries the file without subtitles and says so, so one odd track does
+not fail a file in a large batch.
+
 ### Recipes
 
 A recipe knows how to turn inputs into one output format: its input extensions,

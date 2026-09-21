@@ -41,12 +41,12 @@ def probe_duration(path):
         return None
 
 
-def run_ffmpeg(argv, duration=None, progress=None):
+def run_ffmpeg(argv, duration=None, progress=None, cwd=None):
     """Run ffmpeg. When the length is known, progress(fraction) is called as it runs."""
     command = [argv[0], "-progress", "pipe:1", "-nostats"] + argv[1:]
     with tempfile.TemporaryFile("w+", errors="replace") as errors:
         with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=errors, text=True) as process:
+                              stderr=errors, text=True, cwd=cwd) as process:
             for line in process.stdout:
                 key, _, value = line.strip().partition("=")
                 if progress and duration and key == "out_time_us" and value.lstrip("-").isdigit():

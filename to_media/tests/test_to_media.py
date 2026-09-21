@@ -212,11 +212,25 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
 
+NO_SUBTITLES = {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]}
+
+
+def sub(codec, language=None, **extra):
+    stream = {"codec_type": "subtitle", "codec_name": codec}
+    if language:
+        stream["tags"] = {"language": language}
+    return dict(stream, **extra)
+
+
+def with_subs(*subs):
+    return {"streams": NO_SUBTITLES["streams"] + list(subs)}
+
+
 class H264OptionTests(unittest.TestCase):
     recipe = recipes.get("h264")
 
     def command(self, **options):
-        return self.recipe.command(Job("h264", ["in.mkv"], "out.mp4", options), "tmp.mp4")
+        return self.recipe.build(Job("h264", ["in.mkv"], "out.mp4", options), "tmp.mp4", NO_SUBTITLES).argv
 
     def test_default_is_the_balanced_profile(self):
         command = self.command()
@@ -252,6 +266,171 @@ class H264OptionTests(unittest.TestCase):
     def test_settings_merge(self):
         self.assertEqual(h264.settings({"profile": "hq1080", "max_height": 720})["max_height"], 720)
         self.assertEqual(h264.settings({})["audio_bitrate"], "160k")
+
+
+class SubtitlePlanTests(unittest.TestCase):
+    recipe = recipes.get("h264")
+
+    def plan(self, info, **options):
+        return self.recipe.build(Job("h264", ["in.mkv"], "out.mp4", options), "tmp.mp4", info)
+
+    def maps(self, plan):
+        return [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "-map"]
+
+    def test_text_subtitles_are_kept_as_mov_text_in_mp4(self):
+        plan = self.plan(with_subs(sub("subrip", "eng"), sub("ass", "fra")))
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s:0", "0:s:1"])
+        self.assertEqual(plan.argv[plan.argv.index("-c:s") + 1], "mov_text")
+        self.assertEqual((plan.soft_subtitles, plan.notes), (2, []))
+
+    def test_no_subtitle_codec_option_when_there_are_no_subtitles(self):
+        self.assertNotIn("-c:s", self.plan(NO_SUBTITLES).argv)
+
+    def test_image_subtitles_are_left_out_with_a_note_that_says_what_to_do(self):
+        plan = self.plan(with_subs(sub("hdmv_pgs_subtitle", "eng")))
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertEqual(plan.soft_subtitles, 0)
+        self.assertEqual(len(plan.notes), 1)
+        for expected in ("image subtitle", "hdmv_pgs_subtitle", "--burn-subtitles", "--container mkv"):
+            self.assertIn(expected, plan.notes[0])
+
+    def test_mixed_tracks_keep_the_text_ones_and_report_the_rest(self):
+        plan = self.plan(with_subs(sub("subrip", "eng"), sub("dvd_subtitle", "eng"), sub("eia_608")))
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s:0"])
+        self.assertEqual(len(plan.notes), 2)
+        self.assertIn("unsupported format", plan.notes[1])
+
+    def test_subtitles_none_drops_them_quietly(self):
+        plan = self.plan(with_subs(sub("subrip", "eng"), sub("hdmv_pgs_subtitle")), subtitles="none")
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertEqual(plan.notes, [])
+
+    def test_mkv_keeps_every_subtitle_track_and_the_fonts(self):
+        plan = self.plan(with_subs(sub("subrip", "eng"), sub("hdmv_pgs_subtitle")), container="mkv")
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?", "0:s?", "0:t?"])
+        self.assertEqual(plan.argv[plan.argv.index("-c:s") + 1], "copy")
+        self.assertEqual(plan.argv[plan.argv.index("-f") + 1], "matroska")
+        self.assertEqual(plan.notes, [])
+
+    def test_container_changes_the_output_extension_and_the_folder_scan(self):
+        self.assertEqual(self.recipe.extension({}), ".mp4")
+        self.assertEqual(self.recipe.extension({"container": "mkv"}), ".mkv")
+        self.assertIn(".mp4", self.recipe.source_extensions({"container": "mkv"}))
+        self.assertNotIn(".mkv", self.recipe.source_extensions({"container": "mkv"}))
+        self.assertIn(".mkv", self.recipe.source_extensions({}))
+
+    def test_burning_a_text_track_uses_the_subtitles_filter_and_drops_soft_tracks(self):
+        plan = self.plan(with_subs(sub("subrip", "eng"), sub("subrip", "fra")), burn_subtitles="fra")
+        chain = plan.argv[plan.argv.index("-vf") + 1]
+        self.assertEqual(chain, "subtitles=source.mkv:si=1")
+        self.assertEqual(plan.links, {"source.mkv": os.path.abspath("in.mkv")})
+        self.assertEqual(self.maps(plan), ["0:v:0", "0:a?"])
+        self.assertNotIn("mov_text", plan.argv)
+
+    def test_burning_by_number_and_the_default_is_the_first_track(self):
+        subs = with_subs(sub("subrip", "eng"), sub("subrip", "fra"))
+        self.assertIn("si=0", self.plan(subs, burn_subtitles="0").argv[self.plan(subs, burn_subtitles="0").argv.index("-vf") + 1])
+        self.assertIn("si=1", self.plan(subs, burn_subtitles="1").argv[self.plan(subs, burn_subtitles="1").argv.index("-vf") + 1])
+
+    def test_burning_an_image_track_overlays_it_before_scaling(self):
+        plan = self.plan(with_subs(sub("hdmv_pgs_subtitle", "eng")), burn_subtitles="eng", max_height=480)
+        graph = plan.argv[plan.argv.index("-filter_complex") + 1]
+        self.assertTrue(graph.startswith("[0:v:0][0:s:0]overlay[ov];[ov]"))
+        self.assertIn("min(ih,480)", graph)
+        self.assertNotIn("-vf", plan.argv)
+        self.assertEqual(self.maps(plan)[0], "[v]")
+        self.assertEqual(plan.links, {})
+
+    def test_burning_an_image_track_without_scaling_maps_the_overlay(self):
+        plan = self.plan(with_subs(sub("dvd_subtitle", "eng")), burn_subtitles="0")
+        self.assertEqual(plan.argv[plan.argv.index("-filter_complex") + 1], "[0:v:0][0:s:0]overlay[ov]")
+        self.assertEqual(self.maps(plan)[0], "[ov]")
+
+    def test_language_matching_accepts_two_and_three_letter_codes(self):
+        subs = [sub("subrip", "eng"), sub("subrip", "fra")]
+        self.assertEqual(h264.pick_subtitle(subs, "en"), 0)
+        self.assertEqual(h264.pick_subtitle(subs, "FRA"), 1)
+
+    def test_burning_errors_are_clear(self):
+        from to_medialib.media import RecipeError
+        with self.assertRaisesRegex(RecipeError, "no subtitle tracks"):
+            self.plan(NO_SUBTITLES, burn_subtitles="0")
+        with self.assertRaisesRegex(RecipeError, r"no subtitle track matches 'zzz' \(tracks: eng\)"):
+            self.plan(with_subs(sub("subrip", "eng")), burn_subtitles="zzz")
+        with self.assertRaisesRegex(RecipeError, "there is no subtitle track 3"):
+            self.plan(with_subs(sub("subrip", "eng")), burn_subtitles="3")
+        with self.assertRaisesRegex(RecipeError, "cannot be burned"):
+            self.plan(with_subs(sub("eia_608")), burn_subtitles="0")
+
+    def test_burning_combines_with_deinterlace_before_scaling(self):
+        plan = self.plan(with_subs(sub("subrip", "eng")), burn_subtitles="0", deinterlace=True, max_height=360)
+        chain = plan.argv[plan.argv.index("-vf") + 1]
+        self.assertTrue(chain.startswith("yadif,subtitles=source.mkv:si=0,scale="))
+
+    def test_describe_lists_the_command_and_the_notes(self):
+        class Fake(recipes.get("h264").__class__):
+            def build(self, job, tmp_output, info=None):
+                return super().build(job, tmp_output, with_subs(sub("hdmv_pgs_subtitle", "eng")))
+        text = Fake().describe(Job("h264", ["in.mkv"], "out.mp4", {}))
+        self.assertIn("ffmpeg", text.splitlines()[0])
+        self.assertTrue(text.splitlines()[-1].startswith("note: 1 image subtitle track(s)"))
+
+
+class SubtitleFallbackTests(unittest.TestCase):
+    """A subtitle track that will not convert must not cost the whole file."""
+
+    class Flaky(recipes.get("h264").__class__):
+        def __init__(self):
+            self.attempts = []
+
+        def build(self, job, tmp_output, info=None):
+            return super().build(job, tmp_output, with_subs(sub("subrip", "eng")))
+
+        def execute(self, plan, job, progress):
+            self.attempts.append(plan)
+            if len(self.attempts) == 1:
+                raise runner.RecipeError("ffmpeg failed (exit 1): Could not write header (incorrect codec)\nmore")
+
+    def test_retries_without_subtitles_and_says_so(self):
+        recipe = self.Flaky()
+        notes = recipe.run(Job("h264", ["in.mkv"], "out.mp4", {}), "tmp.mp4")
+        self.assertEqual(len(recipe.attempts), 2)
+        self.assertEqual(recipe.attempts[0].soft_subtitles, 1)
+        self.assertEqual(recipe.attempts[1].soft_subtitles, 0)
+        self.assertNotIn("mov_text", recipe.attempts[1].argv)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("could not be converted and were left out", notes[0])
+        self.assertIn("Could not write header", notes[0])
+
+    def test_no_retry_when_there_were_no_subtitles_to_blame(self):
+        class Plain(self.Flaky):
+            def build(self, job, tmp_output, info=None):
+                return recipes.get("h264").__class__.build(self, job, tmp_output, NO_SUBTITLES)
+        recipe = Plain()
+        with self.assertRaises(runner.RecipeError):
+            recipe.run(Job("h264", ["in.mkv"], "out.mp4", {}), "tmp.mp4")
+        self.assertEqual(len(recipe.attempts), 1)
+
+
+class RunnerNotesTests(TempDirTestCase):
+    def test_notes_are_shown_even_without_verbose(self):
+        class Noting(FakeRecipe):
+            def run(self, job, tmp_output, progress=None):
+                super().run(job, tmp_output, progress)
+                return ["something worth knowing"]
+        src = self.touch("a.src")
+        out = io.StringIO()
+        runner.run_jobs(Noting(), [Job("fake", [src], self.path("a.out"))], runner.Policy(), out)
+        self.assertIn("    note: something worth knowing", out.getvalue())
+
+    def test_dry_run_of_an_unreadable_input_reports_a_failure_instead_of_crashing(self):
+        class Unreadable(FakeRecipe):
+            def describe(self, job):
+                raise runner.RecipeError("ffprobe could not read x")
+        src = self.touch("a.src")
+        status, detail = runner.run_one(Unreadable(), Job("fake", [src], self.path("a.out")),
+                                        runner.Policy(dry_run=True))
+        self.assertEqual((status, detail), ("failed", "ffprobe could not read x"))
 
 
 class FakeRecipe(Recipe):
@@ -462,6 +641,11 @@ class AudioConversionTests(TempDirTestCase):
         self.assertIn("1 planned", done.stdout)
 
 
+def has_libass():
+    done = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
+    return any(line.split()[1:2] == ["subtitles"] for line in done.stdout.splitlines())
+
+
 def nvenc_works():
     try:
         done = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=320x240:d=1",
@@ -494,6 +678,84 @@ class VideoConversionTests(TempDirTestCase):
 
     def streams(self, path):
         return ffprobe_json(path, "-show_streams", "-show_chapters")
+
+    def make_subtitled(self, name, languages=(("eng", "Hello there"), ("fra", "Bonjour"))):
+        """An MKV with one text subtitle track per (language, text) pair."""
+        args = ["-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=3", "-f", "lavfi", "-i", "sine=d=3"]
+        for number, (language, text) in enumerate(languages):
+            srt = self.touch(f"{language}.srt", text=f"1\n00:00:00,000 --> 00:00:03,000\n{text}\n")
+            args += ["-i", srt]
+        maps = ["-map", "0", "-map", "1"] + sum((["-map", str(i + 2)] for i in range(len(languages))), [])
+        meta = sum(([f"-metadata:s:s:{i}", f"language={lang}"] for i, (lang, _) in enumerate(languages)), [])
+        target = self.path(name)
+        ffmpeg(*args, *maps, "-c:v", "libx264", "-c:a", "aac", "-c:s", "srt", *meta, target)
+        return target
+
+    def subtitle_tracks(self, path):
+        return [(s["codec_name"], s.get("tags", {}).get("language"))
+                for s in self.streams(path)["streams"] if s["codec_type"] == "subtitle"]
+
+    def frame_hash(self, path, seconds=1.0):
+        done = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(seconds), "-i", path, "-frames:v", "1",
+                               "-f", "md5", "-"], capture_output=True, text=True, check=True)
+        return done.stdout.strip()
+
+    def test_text_subtitles_are_kept_in_the_mp4_with_their_languages(self):
+        src = self.make_subtitled("movie.mkv")
+        done = self.run_cli("h264", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.subtitle_tracks(self.path("movie.mp4")),
+                         [("mov_text", "eng"), ("mov_text", "fra")])
+        self.assertNotIn("note:", done.stdout)
+
+    def test_subtitles_none_drops_them(self):
+        src = self.make_subtitled("movie.mkv")
+        done = self.run_cli("h264", "--subtitles", "none", src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.subtitle_tracks(self.path("movie.mp4")), [])
+
+    def test_mkv_container_keeps_the_original_subtitle_format(self):
+        src = self.make_subtitled("movie.mkv")
+        done = self.run_cli("h264", "--container", "mkv", "--out", self.path("out"), src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.subtitle_tracks(self.path("out", "movie.mkv")), [("subrip", "eng"), ("subrip", "fra")])
+
+    def test_mkv_container_does_not_pick_up_its_own_output_format_from_folders(self):
+        self.make_subtitled("movie.mkv")
+        shutil.copy(self.path("movie.mkv"), self.path("other.mp4"))
+        done = self.run_cli("h264", "--container", "mkv", "-n", self.tmp)
+        self.assertIn("1 planned", done.stdout)
+
+    @unittest.skipUnless(has_libass(), "this ffmpeg has no subtitles filter (libass)")
+    def test_burning_hardcodes_the_chosen_track_into_the_picture(self):
+        src = self.make_subtitled("movie.mkv")
+        self.run_cli("h264", "--subtitles", "none", "--out", self.path("plain"), src)
+        done = self.run_cli("h264", "--burn-subtitles", "fra", "--out", self.path("burned"), src)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.subtitle_tracks(self.path("burned", "movie.mp4")), [])
+        self.assertNotEqual(self.frame_hash(self.path("plain", "movie.mp4")),
+                            self.frame_hash(self.path("burned", "movie.mp4")))
+
+    @unittest.skipUnless(has_libass(), "this ffmpeg has no subtitles filter (libass)")
+    def test_burning_a_different_track_gives_a_different_picture(self):
+        src = self.make_subtitled("movie.mkv", languages=(("eng", "A completely different sentence"), ("fra", "Court")))
+        self.run_cli("h264", "--burn-subtitles", "eng", "--out", self.path("a"), src)
+        self.run_cli("h264", "--burn-subtitles", "fra", "--out", self.path("b"), src)
+        self.assertNotEqual(self.frame_hash(self.path("a", "movie.mp4")), self.frame_hash(self.path("b", "movie.mp4")))
+
+    def test_burning_a_missing_language_fails_cleanly_and_leaves_nothing(self):
+        src = self.make_subtitled("movie.mkv")
+        done = self.run_cli("h264", "--burn-subtitles", "deu", src)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no subtitle track matches 'deu' (tracks: eng, fra)", done.stdout)
+        self.assertFalse(os.path.exists(self.path("movie.mp4")))
+        self.assertEqual([f for f in os.listdir(self.tmp) if "partial" in f], [])
+
+    def test_dry_run_of_a_broken_file_reports_failure(self):
+        bad = self.touch("broken.mkv", text="not video")
+        done = self.run_cli("h264", "-n", bad)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("failed", done.stdout)
 
     def test_converts_to_h264_and_aac_and_keeps_the_source(self):
         src = self.make_video("clip.avi")

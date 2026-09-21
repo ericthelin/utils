@@ -89,7 +89,8 @@ def main(argv=None, prog=None, out=None):
         print(f"{TOOL_NAME}: {recipe.name} needs {', '.join(missing)}; install it and try again.", file=sys.stderr)
         return 2
 
-    found, problems = sources.collect(args.paths, recipe.input_exts)
+    options = recipe.options_from_args(args)
+    found, problems = sources.collect(args.paths, recipe.source_extensions(options))
     for problem in problems:
         print(f"{TOOL_NAME}: {problem}", file=sys.stderr)
     if not found:
@@ -97,7 +98,7 @@ def main(argv=None, prog=None, out=None):
         return 1
 
     try:
-        jobs = recipe.plan(found, recipe.options_from_args(args), args.out)
+        jobs = recipe.plan(found, options, args.out)
     except Exception as error:
         print(f"{TOOL_NAME}: {error}", file=sys.stderr)
         return 1
