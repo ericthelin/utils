@@ -13,6 +13,7 @@ need and ignore the rest.
 | [git-pr](git_pr/README.md) | Push your branch and open the GitHub pull-request page in the right Chrome profile with `git pr`. |
 | [hist_search](hist_search/README.md) | A better Ctrl-R: fuzzy or regex search through your shell history, with no dependencies. |
 | [irmdir](irmdir/README.md) | `rmdir` that removes whole trees of empty folders and never touches a file. |
+| [ls-enhanced](ls_enhanced/README.md) | One directory-listing command with short flags that uses eza/exa when available and falls back to plain `ls`. |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
 | [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
 | [plonk](plonk/README.md) | Install a downloaded Linux app (AppImage, `.deb`, Flatpak, source tarball or installer) with one command. |

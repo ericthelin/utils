@@ -1,0 +1,368 @@
+#!/bin/bash
+# Enhanced ls wrapper that uses eza/exa if available, falls back to ls
+#
+# Custom alias flags (must map to equivalent ls/eza/exa flags):
+#   -d  -> long listing of everything, newest last
+#   -l  -> long format with all files
+#   -ll -> extra long format
+#   -lt -> long format, sorted by time
+#   -llt -> extra long format, sorted by time
+#   -lT -> long format with deeper tree
+#   -s  -> sorted by size
+#   -t  -> sorted by time
+#   -dir -> single column output
+#
+# Verbose diagnostics:
+#   -v, --verbose, -V   increase verbosity by one level (repeatable)
+#   -VV, -VVV, ...       chained short flags add one level per V
+#   LS_ENHANCED_VERBOSE   set the starting verbosity level directly (integer)
+#   Levels: 1 = show the resolved command; 2 = also show tool detection and
+#   capability probes; 3 = also show raw arguments and fallback details.
+
+# Detect which tool we have - search in multiple common locations
+# Set LS_ENHANCED_TOOL to ls, eza, or exa to force a backend for testing.
+search_paths=(
+  "/opt/homebrew/bin"
+  "/usr/local/bin"
+  "/usr/bin"
+  "/bin"
+  "$HOME/.local/bin"
+  "$HOME/bin"
+  "$HOME/.cargo/bin"
+  "/opt/homebrew/opt/eza/bin"
+  "/usr/local/opt/eza/bin"
+)
+
+# Function to search for command in multiple paths
+find_command() {
+  local cmd="$1"
+  # First try command -v for PATH-based lookup
+  if command -v "$cmd" >/dev/null 2>&1; then
+    command -v "$cmd" 2>/dev/null
+    return 0
+  fi
+
+  # Then search in common installation paths
+  for path in "${search_paths[@]}"; do
+    if [ -x "$path/$cmd" ]; then
+      echo "$path/$cmd"
+      return 0
+    fi
+  done
+  return 1
+}
+
+eza_cmd=$(find_command eza)
+exa_cmd=$(find_command exa)
+forced_tool=${LS_ENHANCED_TOOL:-}
+
+# Verbosity level: can be preset via LS_ENHANCED_VERBOSE, then bumped by
+# -v/-V/--verbose flags (repeatable, and -V may be chained as -VVV).
+verbose_level=0
+if [ -n "${LS_ENHANCED_VERBOSE:-}" ]; then
+  if [[ "$LS_ENHANCED_VERBOSE" =~ ^[0-9]+$ ]]; then
+    verbose_level=$LS_ENHANCED_VERBOSE
+  else
+    echo "Warning: LS_ENHANCED_VERBOSE must be a non-negative integer, ignoring value '$LS_ENHANCED_VERBOSE'" >&2
+  fi
+fi
+
+vlog() {
+  local level="$1"
+  shift
+  if [ "$verbose_level" -ge "$level" ]; then
+    printf '%s\n' "$*" >&2
+  fi
+}
+
+# Pre-scan args purely for verbosity flags so -v/-V/--verbose (and chained
+# -VVV) also affect the diagnostic output emitted before the main arg loop.
+for pre_arg in "$@"; do
+  case "$pre_arg" in
+    -v|--verbose|-V)
+      verbose_level=$((verbose_level + 1))
+      ;;
+    -V*)
+      if [[ "$pre_arg" =~ ^-V+$ ]]; then
+        verbose_level=$((verbose_level + ${#pre_arg} - 1))
+      fi
+      ;;
+  esac
+done
+
+print_command() {
+  local quoted=()
+  local part
+
+  for part in "$@"; do
+    quoted+=("$(printf '%q' "$part")")
+  done
+
+  printf 'Using command:' >&2
+  for part in "${quoted[@]}"; do
+    printf ' %s' "$part" >&2
+  done
+  printf '\n' >&2
+}
+
+ls_supports() {
+  /bin/ls "$1" -d . >/dev/null 2>&1
+}
+
+append_ls_color_arg() {
+  if ls_supports "--color=auto"; then
+    final_args+=("--color=auto")
+  elif ls_supports "-G"; then
+    final_args+=("-G")
+  fi
+}
+
+append_ls_group_dirs_arg() {
+  if ls_supports "--group-directories-first"; then
+    final_args+=("--group-directories-first")
+  fi
+}
+
+vlog 2 "Detected eza: ${eza_cmd:-<not found>}"
+vlog 2 "Detected exa: ${exa_cmd:-<not found>}"
+vlog 3 "Raw arguments: $*"
+
+# Determine which command to use
+if [ -n "$forced_tool" ]; then
+  case "$forced_tool" in
+    ls)
+      primary_cmd="ls"
+      primary_path="/bin/ls"
+      use_color_scale="no"
+      ;;
+    eza)
+      if [ -n "$eza_cmd" ]; then
+        primary_cmd="eza"
+        primary_path="$eza_cmd"
+        use_color_scale="yes"
+      else
+        echo "LS_ENHANCED_TOOL=eza was requested, but eza was not found" >&2
+        exit 1
+      fi
+      ;;
+    exa)
+      if [ -n "$exa_cmd" ]; then
+        primary_cmd="exa"
+        primary_path="$exa_cmd"
+        use_color_scale="yes"
+      else
+        echo "LS_ENHANCED_TOOL=exa was requested, but exa was not found" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Unsupported LS_ENHANCED_TOOL: $forced_tool (expected ls, eza, or exa)" >&2
+      exit 1
+      ;;
+  esac
+elif [ -n "$eza_cmd" ]; then
+  primary_cmd="eza"
+  primary_path="$eza_cmd"
+  # eza/exa use --color-scale in place of --color=auto
+  use_color_scale="yes"
+elif [ -n "$exa_cmd" ]; then
+  primary_cmd="exa"
+  primary_path="$exa_cmd"
+  use_color_scale="yes"
+else
+  primary_cmd="ls"
+  primary_path="/bin/ls"
+  use_color_scale="no"
+fi
+
+vlog 2 "Selected tool: $primary_cmd ($primary_path)"
+
+# Some exa builds are compiled without the git feature and reject --git /
+# --git-ignore outright, so probe for that and skip the flag if unsupported.
+supports_git_arg="yes"
+if [ "$primary_cmd" != "ls" ]; then
+  git_probe_err=$("$primary_path" --git --color=auto . 2>&1 >/dev/null)
+  if [[ "$git_probe_err" == *"git"*"disabled"* ]]; then
+    supports_git_arg="no"
+  fi
+fi
+
+vlog 2 "Git flag support for $primary_cmd: $supports_git_arg"
+
+add_git_arg() {
+  if [ "$supports_git_arg" = "yes" ]; then
+    final_args+=("$1")
+  fi
+}
+
+# Parse custom alias arguments and map to equivalent flags for eza/exa/ls
+# Each flag maps to a specific display mode (see header for mappings)
+declare -a final_args
+
+# Check if we're using ls (no icons support)
+using_ls=false
+if [ "$primary_cmd" = "ls" ]; then
+  using_ls=true
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    -v|--verbose|-V)
+      : # already counted in the verbosity pre-scan above
+      ;;
+    -V*)
+      if [[ "$arg" =~ ^-V+$ ]]; then
+        : # already counted in the verbosity pre-scan above
+      else
+        final_args+=("$arg")
+      fi
+      ;;
+    -d)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-lart")
+        append_ls_color_arg
+      else
+        final_args+=("-lagmF" "-snew" "--color=auto" "--icons")
+      fi
+      ;;
+    -l)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-l" "--all")
+        append_ls_group_dirs_arg
+      else
+        final_args+=("-l" "--all" "--group-directories-first" "--icons")
+        add_git_arg "--git"
+      fi
+      ;;
+    -ll)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-l" "-a" "-a")
+        append_ls_group_dirs_arg
+      else
+        final_args+=("-l" "--all" "--all" "--group-directories-first" "--icons")
+        add_git_arg "--git"
+      fi
+      ;;
+    -lt)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-l" "-t")
+        append_ls_group_dirs_arg
+      else
+        final_args+=("-T" "--level=2" "--group-directories-first" "--icons")
+        add_git_arg "--git-ignore"
+      fi
+      ;;
+    -llt)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-l" "-t")
+        append_ls_group_dirs_arg
+      else
+        final_args+=("-lT" "--level=2" "--group-directories-first" "--icons")
+        add_git_arg "--git-ignore"
+      fi
+      ;;
+    -lT)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-laR")
+        append_ls_group_dirs_arg
+      else
+        final_args+=("-T" "--level=4" "--group-directories-first" "--icons")
+        add_git_arg "--git-ignore"
+      fi
+      ;;
+    -s)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-lagF" "-S")
+        append_ls_color_arg
+      else
+        final_args+=("-laF" "-snew" "--color=auto" "--icons" "-ssize")
+        add_git_arg "--git"
+      fi
+      ;;
+    -t)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-lagF" "-t")
+        append_ls_color_arg
+      else
+        final_args+=("-laF" "-snew" "--color=auto" "--icons" "-T")
+        add_git_arg "--git"
+      fi
+      ;;
+    -dir)
+      if [ "$primary_cmd" = "ls" ]; then
+        final_args+=("-1")
+      else
+        final_args+=("-1" "--icons")
+      fi
+      ;;
+    *) final_args+=("$arg") ;;
+  esac
+done
+
+# Set default if no option (only paths, or nothing) was given
+has_option=false
+for arg in "${final_args[@]}"; do
+  case "$arg" in
+    -*) has_option=true ;;
+  esac
+done
+
+if [ "$has_option" = "false" ]; then
+  if [ "$primary_cmd" != "ls" ]; then
+    final_args+=("--icons" "-snew" "--color=auto")
+    add_git_arg "--git"
+  else
+    final_args+=("-F")
+    append_ls_color_arg
+  fi
+fi
+
+# Add color scale for eza/exa if appropriate
+if [ "$use_color_scale" = "yes" ] && [[ " ${final_args[@]} " =~ " --color=auto " ]]; then
+  # Replace --color=auto with --color-scale for eza/exa
+  final_args=("${final_args[@]/--color=auto/--color-scale}")
+fi
+
+vlog 3 "Final resolved args: ${final_args[*]}"
+
+# Execute the command
+if [ "$primary_cmd" != "ls" ]; then
+  if [ "$verbose_level" -ge 1 ]; then
+    print_command "$primary_path" "${final_args[@]}"
+  fi
+
+  "$primary_path" "${final_args[@]}" 2>/dev/null
+  ret=$?
+
+  # If it failed for any reason (crash, unsupported flag, etc.), fall back to ls
+  if [ $ret -ne 0 ]; then
+    echo "Command failed (exit code $ret), falling back to ls..." >&2
+
+    # Clean args for ls
+    declare -a ls_args
+    declare -a stripped_args
+    for arg in "${final_args[@]}"; do
+      case "$arg" in
+        -snew|-ssize|-sext|--git|--icons|--color-scale|--header|-T|--tree|--git-ignore|--level=*) stripped_args+=("$arg") ;;
+        *) ls_args+=("$arg") ;;
+      esac
+    done
+
+    vlog 2 "Stripped incompatible args for ls fallback: ${stripped_args[*]}"
+
+    if [ "$verbose_level" -ge 1 ]; then
+      print_command /bin/ls "${ls_args[@]}"
+    fi
+
+    /bin/ls "${ls_args[@]}"
+    exit $?
+  fi
+
+  exit $ret
+else
+  if [ "$verbose_level" -ge 1 ]; then
+    print_command /bin/ls "${final_args[@]}"
+  fi
+
+  /bin/ls "${final_args[@]}"
+fi
