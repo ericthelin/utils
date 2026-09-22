@@ -220,10 +220,13 @@ can be given.
    runner, `to_media formats`, and the mp3, jpg, png, webp and m4b recipes, with
    tests on generated media.
 2. **The h264 recipe (done), then parity with the old converters** so the `to_*`
-   commands can be pointed at `to_media`. Still to do for `to_mp3`: FLAC albums
-   split by `.cue`, Audible input, per-chapter splitting and re-encoding of
-   existing MP3s. `to_m4b` and `to_h264` are functionally covered (with the
-   differences listed in the README).
+   commands can be pointed at `to_media`. Audible input and re-encoding
+   existing MP3s are done for `to_mp3`. Still to do: FLAC albums split by
+   `.cue` and per-chapter splitting, both of which need one source to become
+   several outputs; today a recipe's `plan()` can only turn several sources
+   into one output (`many_to_one`, as `m4b` does), not the other way round.
+   `to_m4b` and `to_h264` are functionally covered (with the differences
+   listed in the README).
 3. **Server, worker and client CLI, plus the status page and TLS** (done): the
    SQLite queue with leases and retries, the HTTP job server and status page,
    the worker (with heartbeat-driven cancellation), `to_media server`/`worker`/

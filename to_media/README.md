@@ -97,8 +97,21 @@ named `to_<format>` that points at `to_media.py` works the same as
 | `--quality 0-9` | Variable bitrate quality, 0 best (default 3). |
 | `--bitrate RATE` | Constant bitrate instead, for example `192k`. |
 | `--audiobook` | Small mono files for spoken word (quality 8, genre set to Audiobook). |
+| `--audible KEYS` | Activation byte(s) for Audible `.aa`/`.aax` input (space separated to try more than one). Overrides the keys file. |
 
-Reads FLAC, WAV, AIFF, M4A/M4B, AAC, OGG/Opus, WMA, WavPack and Monkey's Audio.
+Reads FLAC, WAV, AIFF, M4A/M4B, AAC, OGG/Opus, WMA, WavPack, Monkey's Audio,
+Audible `.aa`/`.aax`, and MP3 itself (to re-encode, for example to change the
+bitrate or quality of files you already have; this is the one case where an
+output is allowed to overwrite its own source, and it needs no `--force`).
+
+**Audible input** needs an activation key (the bytes Audible's own apps use to
+unlock a purchased book). Keep one or more (space or newline separated, `#`
+starts a comment) in `~/.config/to_media/audible_keys` (mode 600; this file is
+never part of the repository), or pass `--audible` to try specific ones for a
+single run. Each configured key is tried against the file in order and the
+first one that decodes it is used; if none do, the error names the keys file
+so you know where to add one. Tags (title, author, narrator, genre) carry over
+the same way they do for any other input.
 
 ### `h264`
 
@@ -422,9 +435,15 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
   frames a tagger such as MusicBrainz Picard expects.
 - HEIC input was not tested with a real HEIC file (none could be created here), so
   whether every HEIC tag carries over is unverified; JPEG, PNG and WebP are tested.
-- Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums,
-  no Audible files, no per-chapter splitting, and no re-encoding of existing
-  MP3s. The older tool stays until these are covered.
+- Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums
+  into tracks, and no per-chapter splitting of an audiobook into one file per
+  chapter (both need a source to become several outputs, which the current job
+  model does not yet support). Audible input and re-encoding an existing MP3
+  are covered. The older tool stays until the remaining two are.
+- Audible support was tested with a stand-in file (a real `.aa`/`.aax` needs
+  Audible's own DRM to create, which cannot be done here); the activation-key
+  resolution, tag carry-over and command it builds are exercised, but not
+  against an actual encrypted book.
 - The job server has no data-transfer mode yet: a worker needs the same paths
   the server sees (typically a shared mount).
 - m4b needs every file in a book to be readable by ffmpeg and joins them
@@ -435,6 +454,7 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
 
 ```bash
 python3 tests/test_to_media.py     # conversions (real ones need ffmpeg and ImageMagick)
+python3 tests/test_mp3_parity.py   # mp3 re-encoding in place, Audible input
 python3 tests/test_queue.py        # the job queue
 python3 tests/test_server.py       # the job server's HTTP API
 python3 tests/test_worker.py       # the worker (real ones need ffmpeg)
