@@ -1,6 +1,6 @@
 # to_media
 
-**Reshape audio, video, images and audiobooks from one format to another with one safe, predictable command, and (soon) spread a big batch across every machine you own.**
+**Reshape audio, video, images and audiobooks from one format to another with one safe, predictable command, and spread a big batch across every machine you own.**
 
 `to_media mp3 *.flac`, `to_media h264 *.mkv`, `to_media jpg --max 2048 *.heic`,
 `to_media m4b "My Book/"`:
@@ -8,10 +8,12 @@ the same options, the same safety rules and the same progress report whatever
 you are converting. Every format also has a short alias you can call directly:
 `to_mp3`, `to_jpg`, `to_m4b`.
 
-> **Status:** inline conversion of mp3, h264, m4b, jpg, png and webp works today.
-> The job server and workers (`--queue`, `to_media server`, `to_media worker`)
-> are designed but **not built yet**; see [DESIGN.md](DESIGN.md). Until then
-> `--queue` and the server commands say so and do nothing.
+> **Status:** inline conversion of mp3, h264, m4b, jpg, png and webp works today,
+> as does the job server (`to_media server`, `to_media worker`, `--queue`,
+> `--follow`, `jobs`, `status`, `cancel`, `retry`); see
+> [Job server](#job-server-and-workers) below and [DESIGN.md](DESIGN.md). Data
+> transfer mode (workers without shared storage) and TLS are not built yet;
+> today every worker needs the same paths the server sees.
 
 An illustrative session:
 
@@ -47,8 +49,9 @@ $ to_media mp3 ~/Music/Album
 - **Rehearse first.** `--dry-run` prints the exact command for every file.
 - **Live progress.** Long conversions (video especially) show a progress bar with
   the percentage, elapsed time and an estimated time remaining.
-- **Built to scale out.** Jobs are plain data, so the planned job server can send
-  the same work to a farm of machines (see [DESIGN.md](DESIGN.md)).
+- **Built to scale out.** Jobs are plain data, so `--queue` sends the same work
+  to a farm of machines through the job server (see
+  [Job server](#job-server-and-workers) below).
 
 ## Quick start
 
@@ -84,7 +87,8 @@ named `to_<format>` that points at `to_media.py` works the same as
 | `--replace` | Delete each source after its output has been written successfully. Default: keep sources. |
 | `--no-preserve-times` | Give outputs the current time. Default: each output keeps its source's modification time (newest source for an audiobook). |
 | `-v`, `--verbose` | Report every file, not just skips and failures. |
-| `--queue`, `--follow` | For the planned job server. Not available yet. |
+| `--queue` | Submit to the job server and return immediately, instead of converting here. Prompts for a server if none is configured or reachable (see below). |
+| `--follow` | With `--queue`, print live progress until the batch finishes. Ctrl-C stops following; the jobs keep running. |
 
 ### `mp3`
 
@@ -164,6 +168,69 @@ What happens by default:
 Reads HEIC/HEIF (when your ImageMagick supports it), PNG, JPEG, WebP, TIFF, BMP,
 GIF (first frame) and AVIF. Files already in the target format are skipped when
 converting a folder.
+
+## Job server and workers
+
+`--queue` sends conversions to a server instead of running them here, so a
+large batch can be spread across every machine you own. Everyday commands
+still need no server: `to_media mp3 *.flac` never touches one.
+
+```bash
+to_media server                         # first run: sets up and starts a server, prints a join string
+to_media worker                         # on another machine: paste the join string when asked, or
+to_media worker tomedia://TOKEN@host:port   # ...give it directly and it is remembered
+
+to_media mp3 *.flac --queue             # queues the files, returns immediately
+to_media mp3 *.flac --queue --follow    # queues, then shows live progress until it is done
+to_media status                         # batches and workers, once
+to_media status --watch                 # ...refreshed every 5s
+to_media jobs --state failed            # list jobs in a given state
+to_media cancel --batch 3               # stop a batch (queued jobs at once; running ones asked to stop)
+to_media retry --batch 3                # requeue its failed/cancelled jobs
+```
+
+| Command | Meaning |
+| --- | --- |
+| `to_media server` | Start (first run: also set up) the job server. Runs in the background by default. |
+| `to_media server --foreground` | Stay attached; logs to the console instead of syslog/a file. |
+| `to_media server --stop`, `--status` | Stop a background server, or report whether one is running. |
+| `to_media server --setup` | Ask the setup questions again. |
+| `to_media server --advertise hostname\|ip\|both\|VALUE` | How workers should find this server. |
+| `to_media server --new-token` | Rotate the token; old join strings stop working. |
+| `to_media server --join-info` | Print only the join string. |
+| `to_media worker [JOIN]` | Run a worker for the given join string (remembered for next time) or the remembered server. Also backgrounds by default. |
+| `to_media worker --slots N` | Run up to `N` conversions at once (default 1). |
+| `to_media worker --recipes FORMAT,...` | Only claim these formats (default: everything installed on this machine). |
+| `to_media worker --stop`, `--status` | Stop a background worker, or report whether one is running. |
+| `to_media jobs [--state STATE] [--batch ID] [--limit N]` | List jobs. |
+| `to_media status [--watch [SECONDS]]` | Batches and workers; `--watch` keeps refreshing. |
+| `to_media cancel JOB_ID`, `to_media cancel --batch ID` | Cancel one job or a whole batch. |
+| `to_media retry JOB_ID`, `to_media retry --batch ID` | Requeue a failed or cancelled job or batch. |
+
+How it behaves:
+
+- **A worker needs no shared storage today**: every input and output path is
+  read and written locally by the worker, so a worker on another machine needs
+  the same paths the server sees (typically an NFS or SMB share mounted the
+  same way everywhere). Sending files over the connection instead is designed
+  but not built yet (see [DESIGN.md](DESIGN.md)).
+- **The join string** (`tomedia://TOKEN@host:port?id=...`) is a secret: anyone
+  who has it can submit and see jobs on that server. It is what `to_media worker`
+  and a `--queue` prompt ask for.
+- **No server configured (or unreachable) when you use `--queue`** prompts you
+  to start one on this machine, paste a join string, or cancel; the reason
+  (timeout, refused, bad token) is stated for an unreachable one.
+- **A dead worker's job is requeued.** Workers hold a job on a lease, renewed
+  every few seconds; if a worker stops answering, the job goes back to the
+  queue (or fails, after too many attempts), never silently lost.
+- **`--force`, `--replace` and `--no-preserve-times`** apply the same way on a
+  worker as they do inline.
+- **Encryption is not implemented yet.** The connection is always plain HTTP
+  today; treat it as a trusted LAN. The server and every worker print an
+  "unencrypted" warning when `openssl` is not installed, ahead of TLS support
+  that will use it (see [DESIGN.md](DESIGN.md)).
+- **Logging**: the server and worker log to syslog by default, or to a file with
+  `--log PATH`, or to the console with `--foreground`.
 
 ## How it behaves
 
@@ -354,7 +421,8 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
 - Not yet as capable as the older `to_mp3`: no `.cue` splitting of FLAC albums,
   no Audible files, no per-chapter splitting, and no re-encoding of existing
   MP3s. The older tool stays until these are covered.
-- No job server, workers or `--queue` yet.
+- The job server has no data-transfer mode yet: a worker needs the same paths
+  the server sees (typically a shared mount), and there is no TLS yet either.
 - m4b needs every file in a book to be readable by ffmpeg and joins them
   re-encoded to AAC; it does not keep the original codec.
 - Animated images are converted from their first frame only.
@@ -362,11 +430,18 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
 ## Development
 
 ```bash
-python3 tests/test_to_media.py     # this tool's tests (real conversions need ffmpeg and ImageMagick)
+python3 tests/test_to_media.py     # conversions (real ones need ffmpeg and ImageMagick)
+python3 tests/test_queue.py        # the job queue
+python3 tests/test_server.py       # the job server's HTTP API
+python3 tests/test_worker.py       # the worker (real ones need ffmpeg)
+python3 tests/test_join.py         # the tomedia:// join string
+python3 tests/test_daemon.py       # background start/stop/status
+python3 tests/test_serverctl.py    # server/worker/jobs/status/cancel/retry CLI, --queue prompts
 tests/run_tests.sh                 # every tool's tests (from the repository root)
 ```
 
-The design and the plan for the job server are in [DESIGN.md](DESIGN.md).
+The design and the plan for later job-server work (data transfer, TLS) are in
+[DESIGN.md](DESIGN.md).
 
 ## License
 
