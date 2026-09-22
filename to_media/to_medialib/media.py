@@ -12,6 +12,10 @@ class RecipeError(Exception):
     """A conversion failed; the message is shown to the user."""
 
 
+class Cancelled(RecipeError):
+    """The progress callback asked for the conversion to stop."""
+
+
 def which(program):
     return shutil.which(program)
 
@@ -47,10 +51,15 @@ def run_ffmpeg(argv, duration=None, progress=None, cwd=None):
     with tempfile.TemporaryFile("w+", errors="replace") as errors:
         with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=errors, text=True, cwd=cwd) as process:
-            for line in process.stdout:
-                key, _, value = line.strip().partition("=")
-                if progress and duration and key == "out_time_us" and value.lstrip("-").isdigit():
-                    progress(min(1.0, max(0.0, int(value) / 1e6 / duration)))
+            try:
+                for line in process.stdout:
+                    key, _, value = line.strip().partition("=")
+                    if progress and duration and key == "out_time_us" and value.lstrip("-").isdigit():
+                        progress(min(1.0, max(0.0, int(value) / 1e6 / duration)))
+            except Cancelled:
+                process.kill()
+                process.wait()
+                raise
         if process.returncode:
             errors.seek(0)
             tail = "\n".join(errors.read().strip().splitlines()[-5:])

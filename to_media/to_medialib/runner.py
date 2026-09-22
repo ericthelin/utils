@@ -17,6 +17,14 @@ class Policy:
     verbose: bool = False
     preserve_times: bool = True
 
+    def to_dict(self):
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        fields = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in (data or {}).items() if k in fields})
+
 
 def format_duration(seconds):
     hours, rest = divmod(int(round(seconds)), 3600)
