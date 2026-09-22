@@ -737,17 +737,11 @@ class CliTests(TempDirTestCase):
         for name in recipes.names():
             self.assertIn(name, out)
 
-    def test_server_commands_are_reserved_but_not_available(self):
-        for command in cli.SERVER_COMMANDS:
-            code, _, err = self.call(command)
-            self.assertEqual(code, 2)
-            self.assertIn("not available yet", err)
-
-    def test_queue_is_refused_clearly(self):
+    def test_follow_without_queue_is_refused(self):
         src = self.touch("a.flac")
-        code, _, err = self.call("mp3", "--queue", src)
+        code, _, err = self.call("mp3", "--follow", src)
         self.assertEqual(code, 2)
-        self.assertIn("--queue", err)
+        self.assertIn("--follow", err)
         self.assertFalse(os.path.exists(self.path("a.mp3")))
 
     def test_no_matching_files_is_an_error(self):

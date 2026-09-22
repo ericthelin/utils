@@ -32,9 +32,50 @@ def add_common_arguments(parser):
                         help="give outputs the current time (default: they keep their source's modification time)")
     parser.add_argument("-v", "--verbose", action="store_true", help="report every file, not just problems")
     parser.add_argument("--queue", action="store_true",
-                        help="send to the job server instead of converting here (not available yet)")
+                        help="send to the job server instead of converting here")
     parser.add_argument("--follow", action="store_true",
-                        help="with --queue, follow progress until the batch finishes (not available yet)")
+                        help="with --queue, follow progress until the batch finishes")
+
+
+def add_server_arguments(parser):
+    parser.add_argument("--setup", action="store_true", help="ask the setup questions again")
+    parser.add_argument("--foreground", action="store_true", help="stay attached instead of running in the background")
+    parser.add_argument("--stop", action="store_true", help="stop a background server")
+    parser.add_argument("--status", action="store_true", help="report whether it is running")
+    parser.add_argument("--new-token", action="store_true", help="rotate the token; old join strings stop working")
+    parser.add_argument("--join-info", action="store_true", help="print only the join string")
+    parser.add_argument("--advertise", metavar="hostname|ip|both|VALUE",
+                        help="how workers should find this server")
+    parser.add_argument("--port", type=int, help="listen on this port instead of the configured one")
+    parser.add_argument("--log", metavar="console|syslog|PATH", default=None,
+                        help="where to log (default: syslog, falling back to a file)")
+
+
+def add_worker_arguments(parser):
+    parser.add_argument("join", nargs="?", metavar="JOIN", help="a join string; remembered for next time")
+    parser.add_argument("--slots", type=int, default=1, help="how many jobs to run at once (default: 1)")
+    parser.add_argument("--foreground", action="store_true", help="stay attached instead of running in the background")
+    parser.add_argument("--stop", action="store_true", help="stop a background worker")
+    parser.add_argument("--status", action="store_true", help="report whether it is running")
+    parser.add_argument("--recipes", metavar="FORMAT,...",
+                        help="only claim these formats (default: everything installed here)")
+    parser.add_argument("--log", metavar="console|syslog|PATH", default=None, help="where to log")
+
+
+def add_jobs_arguments(parser):
+    parser.add_argument("--state", choices=("queued", "running", "done", "skipped", "failed", "cancelled"))
+    parser.add_argument("--batch", type=int, metavar="ID")
+    parser.add_argument("--limit", type=int, default=50)
+
+
+def add_status_arguments(parser):
+    parser.add_argument("--watch", type=int, nargs="?", const=5, metavar="SECONDS",
+                        help="keep refreshing (every 5s, or SECONDS)")
+
+
+def add_job_or_batch_arguments(parser):
+    parser.add_argument("job", nargs="?", type=int, metavar="JOB_ID")
+    parser.add_argument("--batch", type=int, metavar="ID")
 
 
 def build_parser(prog):
@@ -47,8 +88,12 @@ def build_parser(prog):
         add_common_arguments(sub)
         recipe.add_arguments(sub)
     subparsers.add_parser("formats", help="list the formats available and what each needs")
-    for name in SERVER_COMMANDS:
-        subparsers.add_parser(name, help="job server commands (not available yet)")
+    add_server_arguments(subparsers.add_parser("server", help="start, configure or check the job server"))
+    add_worker_arguments(subparsers.add_parser("worker", help="run a worker for the remembered or given server"))
+    add_jobs_arguments(subparsers.add_parser("jobs", help="list queued and recent jobs"))
+    add_status_arguments(subparsers.add_parser("status", help="show batches and workers on the server"))
+    add_job_or_batch_arguments(subparsers.add_parser("cancel", help="cancel a job or a whole batch"))
+    add_job_or_batch_arguments(subparsers.add_parser("retry", help="requeue a failed or cancelled job or batch"))
     return parser
 
 
@@ -77,12 +122,24 @@ def main(argv=None, prog=None, out=None):
         print_formats(out)
         return 0
     if args.command in SERVER_COMMANDS:
-        print(f"{TOOL_NAME} {args.command}: the job server is not available yet (see DESIGN.md).",
-              file=sys.stderr)
-        return 2
-    if args.queue or args.follow:
-        print(f"{TOOL_NAME}: --queue needs the job server, which is not available yet; "
-              "run without --queue to convert here.", file=sys.stderr)
+        from . import serverctl
+        if args.command == "server":
+            args.recipes = None
+            return serverctl.cmd_server(args, out, sys.stderr)
+        if args.command == "worker":
+            args.recipes = args.recipes.split(",") if args.recipes else None
+            return serverctl.cmd_worker(args, out, sys.stderr)
+        if args.command == "jobs":
+            return serverctl.cmd_jobs(args, out, sys.stderr)
+        if args.command == "status":
+            return serverctl.cmd_status(args, out, sys.stderr)
+        if args.command == "cancel":
+            return serverctl.cmd_cancel(args, out, sys.stderr)
+        if args.command == "retry":
+            return serverctl.cmd_retry(args, out, sys.stderr)
+
+    if args.follow and not args.queue:
+        print(f"{TOOL_NAME}: --follow only makes sense with --queue", file=sys.stderr)
         return 2
 
     recipe = recipes.get(args.command)
@@ -106,5 +163,15 @@ def main(argv=None, prog=None, out=None):
         return 1
     policy = Policy(dry_run=args.dry_run, force=args.force, replace=args.replace, verbose=args.verbose,
                     preserve_times=not args.no_preserve_times)
+    if args.queue:
+        from . import queueclient
+        client = queueclient.resolve_queue_client(out=out, err=sys.stderr)
+        if client is None:
+            return 2
+        batch = queueclient.submit_batch(client, recipe.name, jobs, policy)
+        print(f"{TOOL_NAME}: queued as batch {batch} ({len(jobs)} job(s)).", file=out)
+        if args.follow:
+            queueclient.follow_batch(client, batch, out)
+        return 0
     counts = runner.run_jobs(recipe, jobs, policy, out)
     return 1 if counts["failed"] or problems else 0
