@@ -224,15 +224,16 @@ can be given.
    split by `.cue`, Audible input, per-chapter splitting and re-encoding of
    existing MP3s. `to_m4b` and `to_h264` are functionally covered (with the
    differences listed in the README).
-3. **Server, worker and client CLI, plus the status page** (done): the SQLite
-   queue with leases and retries, the HTTP job server and status page, the
-   worker (with heartbeat-driven cancellation), and `to_media server`/`worker`/
+3. **Server, worker and client CLI, plus the status page and TLS** (done): the
+   SQLite queue with leases and retries, the HTTP job server and status page,
+   the worker (with heartbeat-driven cancellation), `to_media server`/`worker`/
    `jobs`/`status`/`cancel`/`retry`/`--queue`/`--follow`, including the prompts
    when no server is configured or reachable, background start/stop by
-   default, and the `tomedia://` join string. Shared-path mode only: a worker
-   needs the same paths the server sees.
-4. Data transfer mode (so a worker needs no shared storage), TLS, chunked
-   claims for small jobs.
+   default, the `tomedia://` join string, and the self-signed certificate with
+   fingerprint pinning described above. Shared-path mode only: a worker needs
+   the same paths the server sees.
+4. Data transfer mode (so a worker needs no shared storage), chunked claims
+   for small jobs.
 5. Retire the old Perl and PHP converters and Gearman.
 
 ## Open items

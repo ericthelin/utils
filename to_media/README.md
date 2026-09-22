@@ -12,8 +12,8 @@ you are converting. Every format also has a short alias you can call directly:
 > as does the job server (`to_media server`, `to_media worker`, `--queue`,
 > `--follow`, `jobs`, `status`, `cancel`, `retry`); see
 > [Job server](#job-server-and-workers) below and [DESIGN.md](DESIGN.md). Data
-> transfer mode (workers without shared storage) and TLS are not built yet;
-> today every worker needs the same paths the server sees.
+> transfer mode (workers without shared storage) is not built yet; today every
+> worker needs the same paths the server sees.
 
 An illustrative session:
 
@@ -225,10 +225,14 @@ How it behaves:
   queue (or fails, after too many attempts), never silently lost.
 - **`--force`, `--replace` and `--no-preserve-times`** apply the same way on a
   worker as they do inline.
-- **Encryption is not implemented yet.** The connection is always plain HTTP
-  today; treat it as a trusted LAN. The server and every worker print an
-  "unencrypted" warning when `openssl` is not installed, ahead of TLS support
-  that will use it (see [DESIGN.md](DESIGN.md)).
+- **Encryption.** When `openssl` is available at setup time, the server
+  generates itself a self-signed certificate and the join string carries its
+  fingerprint, so a worker or client pins that exact certificate instead of
+  trusting a certificate authority (there isn't one). Without `openssl`, the
+  server and every worker print an "unencrypted" warning and the connection is
+  plain HTTP. Either way, treat it as a trusted LAN: there is no revocation, and
+  a leaked join string can talk to the server until the token is rotated
+  (`to_media server --new-token`).
 - **Logging**: the server and worker log to syslog by default, or to a file with
   `--log PATH`, or to the console with `--foreground`.
 
@@ -422,7 +426,7 @@ subtitles (see above), and defaults to the source's size (use `--profile fast720
   no Audible files, no per-chapter splitting, and no re-encoding of existing
   MP3s. The older tool stays until these are covered.
 - The job server has no data-transfer mode yet: a worker needs the same paths
-  the server sees (typically a shared mount), and there is no TLS yet either.
+  the server sees (typically a shared mount).
 - m4b needs every file in a book to be readable by ffmpeg and joins them
   re-encoded to AAC; it does not keep the original codec.
 - Animated images are converted from their first frame only.
@@ -435,6 +439,7 @@ python3 tests/test_queue.py        # the job queue
 python3 tests/test_server.py       # the job server's HTTP API
 python3 tests/test_worker.py       # the worker (real ones need ffmpeg)
 python3 tests/test_join.py         # the tomedia:// join string
+python3 tests/test_tls.py          # certificate generation and fingerprint pinning
 python3 tests/test_daemon.py       # background start/stop/status
 python3 tests/test_serverctl.py    # server/worker/jobs/status/cancel/retry CLI, --queue prompts
 tests/run_tests.sh                 # every tool's tests (from the repository root)

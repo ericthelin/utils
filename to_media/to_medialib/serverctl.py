@@ -8,6 +8,7 @@ import socket
 import sys
 import time
 
+from . import tls as tls_mod
 from . import worker as worker_mod
 from .client import Client, ServerError, Unreachable
 from .config import TOOL_NAME, config_dir, load_config, save_config
@@ -42,6 +43,10 @@ def advertised_hosts(choice, custom=None):
     return {"hostname": [hostname], "ip": [ip], "both": [hostname, ip]}.get(choice, [hostname])
 
 
+def cert_paths():
+    return os.path.join(config_dir(), "server.crt"), os.path.join(config_dir(), "server.key")
+
+
 def setup_server(parser, advertise=None, ask=input, out=sys.stdout):
     """Fill in the [server] section, asking what is not already decided."""
     if not parser.has_section("server"):
@@ -51,6 +56,13 @@ def setup_server(parser, advertise=None, ask=input, out=sys.stdout):
     section.setdefault("port", str(free_port()))
     section.setdefault("host", "0.0.0.0")
     section.setdefault("server_id", secrets.token_hex(4))
+    if "tls" not in section:
+        os.makedirs(config_dir(), exist_ok=True)
+        if tls_mod.available():
+            section["fingerprint"] = tls_mod.ensure_cert(*cert_paths())
+            section["tls"] = "yes"
+        else:
+            section["tls"] = "no"
     if advertise and advertise not in ("hostname", "ip", "both"):
         section["advertise"] = "custom"
         section["advertise_value"] = advertise
@@ -70,7 +82,8 @@ def setup_server(parser, advertise=None, ask=input, out=sys.stdout):
 def join_string(section):
     hosts = advertised_hosts(section.get("advertise", "hostname"), section.get("advertise_value"))
     return Join(token=section["token"], hosts=hosts, port=int(section["port"]),
-               server_id=section.get("server_id", ""))
+               server_id=section.get("server_id", ""),
+               fingerprint=section.get("fingerprint", "") if section.get("tls") == "yes" else "")
 
 
 def make_logger(log_choice, name, foreground):
@@ -97,13 +110,13 @@ def print_join_info(section, out):
     join = join_string(section)
     print(f"join string: {join}", file=out)
     print(f"status page: {join.url()}/status?token={section['token']}", file=out)
-    if not has_openssl():
-        print(f"{TOOL_NAME}: warning: openssl was not found; the connection is unencrypted.", file=out)
+    if section.get("tls") != "yes":
+        print(f"{TOOL_NAME}: warning: openssl was not found when this server was set up; "
+              "the connection is unencrypted.", file=out)
 
 
 def has_openssl():
-    import shutil
-    return bool(shutil.which("openssl"))
+    return tls_mod.available()
 
 
 # server ---------------------------------------------------------------------
@@ -168,13 +181,14 @@ def cmd_server(args, out, err, ask=input):
     # A foregrounded run *is* the server (this is what the background command
     # below re-execs into); it must never consult the pidfile, since by the
     # time it runs, that pidfile already names this very process.
+    join = join_string(section)
+    tls_context = tls_mod.server_context(*cert_paths()) if section.get("tls") == "yes" else None
+
     if args.foreground:
         from .server import Server
         make_logger(args.log, "server", foreground=True)
-        if not has_openssl():
-            print(f"{TOOL_NAME}: warning: openssl was not found; the connection is unencrypted.", file=out)
         server = Server(os.path.join(config_dir(), "jobs.db"), host=section["host"],
-                        port=int(section["port"]), token=section["token"])
+                        port=int(section["port"]), token=section["token"], tls_context=tls_context)
         print_join_info(section, out)
         server.serve_forever()
         return 0
@@ -185,9 +199,6 @@ def cmd_server(args, out, err, ask=input):
         print_join_info(section, out)
         return 0
 
-    if not has_openssl():
-        print(f"{TOOL_NAME}: warning: openssl was not found; the connection is unencrypted.", file=out)
-
     log_path = args.log if args.log not in (None, "", "console", "syslog") else os.path.join(
         config_dir(), "server.log")
     pid = spawn_background([sys.executable, ENTRY_SCRIPT, "server", "--foreground", "--log", args.log or "syslog"],
@@ -195,7 +206,7 @@ def cmd_server(args, out, err, ask=input):
     for _ in range(50):
         time.sleep(0.1)
         try:
-            Client(join_string(section).url(), token=section["token"], timeout=2).health()
+            Client(join.url(), token=section["token"], fingerprint=join.fingerprint, timeout=2).health()
             break
         except ServerError:
             continue
@@ -220,10 +231,10 @@ def resolve_client(parser, join_arg=None):
             parser.add_section("client")
         parser["client"]["server"] = str(join)
         save_config(parser)
-        return Client(join.url(), token=join.token), None
+        return Client(join.url(), token=join.token, fingerprint=join.fingerprint), None
     if parser.has_section("client") and parser["client"].get("server"):
         join = parse_join(parser["client"]["server"])
-        return Client(join.url(), token=join.token), None
+        return Client(join.url(), token=join.token, fingerprint=join.fingerprint), None
     return None, "no server is remembered; run with a join string, e.g. `to_media worker tomedia://...`"
 
 
@@ -251,8 +262,8 @@ def cmd_worker(args, out, err):
     except ServerError as error:
         print(f"{TOOL_NAME}: could not reach the server: {error}", file=err)
         return 1
-    if not has_openssl():
-        print(f"{TOOL_NAME}: warning: openssl was not found; the connection is unencrypted.", file=out)
+    if client.scheme != "https":
+        print(f"{TOOL_NAME}: warning: this server's connection is unencrypted.", file=out)
 
     if args.foreground:
         make_logger(args.log, "worker", foreground=True)

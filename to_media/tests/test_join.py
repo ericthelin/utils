@@ -28,6 +28,15 @@ class JoinTests(unittest.TestCase):
         join = Join(token="tok", hosts=["box", "10.0.0.5"], port=7878)
         self.assertEqual(join.url(), "http://box:7878")
 
+    def test_a_fingerprint_round_trips_and_switches_the_scheme_to_https(self):
+        join = Join(token="tok", hosts=["box"], port=7878, server_id="ab12", fingerprint="ff" * 32)
+        parsed = parse(str(join))
+        self.assertEqual(parsed, join)
+        self.assertEqual(parsed.url(), "https://box:7878")
+
+    def test_no_fingerprint_means_plain_http(self):
+        self.assertEqual(parse("tomedia://tok@box:7878").url(), "http://box:7878")
+
     def test_not_a_join_string_at_all(self):
         with self.assertRaises(InvalidJoinString):
             parse("http://box:7878")

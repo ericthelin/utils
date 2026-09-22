@@ -136,7 +136,7 @@ class JobsStatusClientTests(ConfigIsolatedTestCase):
         parser = load_config()
         self.join = serverctl.join_string(parser["server"])
         from to_medialib.client import Client
-        self.client = Client(self.join.url(), token=self.join.token)
+        self.client = Client(self.join.url(), token=self.join.token, fingerprint=self.join.fingerprint)
 
     def test_jobs_and_status_with_no_server_remembered_locally(self):
         # this test's config already has a server remembered by setUp
@@ -215,7 +215,7 @@ class QueueSubmitTests(ConfigIsolatedTestCase):
         client_join = serverctl.join_string(parser["server"])
         from to_medialib.client import Client
         from to_medialib.worker import run_forever
-        client = Client(client_join.url(), token=client_join.token)
+        client = Client(client_join.url(), token=client_join.token, fingerprint=client_join.fingerprint)
         stop_after = {"n": 0}
         run_forever(client, wid="w1", capabilities=["mp3"], stop=lambda: (stop_after.__setitem__(
             "n", stop_after["n"] + 1) or stop_after["n"] > 5), sleep=lambda s: None)

@@ -258,9 +258,11 @@ def make_handler(store, token, version=__version__):
 class Server:
     """A running job server: the HTTP listener plus a background lease reaper."""
 
-    def __init__(self, db_path, host="0.0.0.0", port=0, token=None, clock=time.time):
+    def __init__(self, db_path, host="0.0.0.0", port=0, token=None, clock=time.time, tls_context=None):
         self.store = Store(db_path, clock=clock)
         self.httpd = ThreadingHTTPServer((host, port), make_handler(self.store, token))
+        if tls_context is not None:
+            self.httpd.socket = tls_context.wrap_socket(self.httpd.socket, server_side=True)
         self._stop = threading.Event()
         self._reaper = threading.Thread(target=self._reap_loop, daemon=True)
 
