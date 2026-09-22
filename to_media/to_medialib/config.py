@@ -30,3 +30,20 @@ def save_config(parser, path=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
         parser.write(handle)
+
+
+def audible_keys_path():
+    return os.path.join(config_dir(), "audible_keys")
+
+
+def load_audible_keys(path=None):
+    """One or more activation keys (hex) per line; '#' starts a comment."""
+    try:
+        with open(path or audible_keys_path()) as handle:
+            text = handle.read()
+    except OSError:
+        return []
+    keys = []
+    for line in text.splitlines():
+        keys.extend(line.split("#", 1)[0].split())
+    return keys

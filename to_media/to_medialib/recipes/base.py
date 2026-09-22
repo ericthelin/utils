@@ -14,6 +14,7 @@ class Recipe:
     output_ext = ""
     input_exts = frozenset()
     many_to_one = False
+    allow_overwrite_source = False  # true only for a format that may re-encode itself in place
 
     def requires(self):
         """Programs that must be installed."""

@@ -1,12 +1,15 @@
 """MP3 audio, encoded with ffmpeg and LAME. Tags and cover art are carried over."""
 
+import os
 import shlex
 
 from .base import Recipe
-from ..media import attached_pictures, format_tags, probe, run_ffmpeg
+from ..config import audible_keys_path, load_audible_keys
+from ..media import RecipeError, attached_pictures, format_tags, probe, run_ffmpeg, run_quiet
 
 AUDIO_INPUTS = frozenset({".flac", ".wav", ".aiff", ".aif", ".m4a", ".m4b", ".aac", ".ogg", ".oga",
-                          ".opus", ".wma", ".wv", ".ape"})
+                          ".opus", ".wma", ".wv", ".ape", ".mp3"})
+AUDIBLE_INPUTS = frozenset({".aa", ".aax"})
 DEFAULT_QUALITY = 3
 AUDIOBOOK_QUALITY = 8
 
@@ -38,12 +41,35 @@ def id3_tag_fixes(tags):
     return fixes
 
 
+def audible_probe(path, key):
+    """Try to decode a moment of audio with this activation key. Whatever
+    fails to decode says so with the literal phrase ffmpeg uses for a wrong
+    key ("mismatch in checksums!"); anything else counts as a match, since a
+    wrong key is the one failure this cannot silently succeed past."""
+    return run_quiet(["ffmpeg", "-loglevel", "error", "-activation_bytes", key, "-i", path,
+                      "-t", "0.2", "-f", "null", "-"])
+
+
+def resolve_audible_key(path, keys, probe_fn=audible_probe):
+    """The first configured key that unlocks this file, or a RecipeError
+    naming where the keys were looked for."""
+    if not keys:
+        raise RecipeError(f"no audible activation key configured for {path} (see {audible_keys_path()})")
+    for key in keys:
+        _, tail = probe_fn(path, key)
+        if "mismatch in checksums" not in tail.lower():
+            return key
+    raise RecipeError(f"none of the {len(keys)} configured audible key(s) unlocked {path} "
+                      f"(see {audible_keys_path()})")
+
+
 class Mp3(Recipe):
     name = "mp3"
     kind = "audio"
     description = "MP3 audio (ffmpeg + LAME); tags and cover art carried over"
     output_ext = ".mp3"
-    input_exts = AUDIO_INPUTS
+    input_exts = AUDIO_INPUTS | AUDIBLE_INPUTS
+    allow_overwrite_source = True  # re-encoding an existing mp3 in place is intentional
 
     def requires(self):
         return ["ffmpeg", "ffprobe"]
@@ -55,6 +81,9 @@ class Mp3(Recipe):
         group.add_argument("--bitrate", metavar="RATE", help="constant bitrate instead, e.g. 192k")
         group.add_argument("--audiobook", action="store_true",
                            help="small mono files for spoken word")
+        group.add_argument("--audible", metavar="KEYS",
+                           help="Audible activation byte(s) to try (space separated), overriding "
+                                f"{audible_keys_path()}")
 
     def options_from_args(self, args):
         options = {}
@@ -64,6 +93,8 @@ class Mp3(Recipe):
             options["bitrate"] = args.bitrate
         if args.audiobook:
             options["audiobook"] = True
+        if args.audible:
+            options["audible"] = args.audible.split()
         return options
 
     def build(self, job, tmp_output, info=None):
@@ -71,8 +102,11 @@ class Mp3(Recipe):
         info = info if info is not None else probe(job.inputs[0])
         audiobook = options.get("audiobook", False)
         pictures = attached_pictures(info)
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", job.inputs[0],
-                   "-map", "0:a:0"]
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if os.path.splitext(job.inputs[0])[1].lower() in AUDIBLE_INPUTS:
+            keys = options.get("audible") or load_audible_keys()
+            command += ["-activation_bytes", resolve_audible_key(job.inputs[0], keys)]
+        command += ["-i", job.inputs[0], "-map", "0:a:0"]
         for picture in pictures:
             command += ["-map", f"0:{picture['index']}"]
         command += ["-map_metadata", "0", "-codec:a", "libmp3lame"]

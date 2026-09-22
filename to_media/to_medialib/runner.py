@@ -90,9 +90,10 @@ def display(job):
 
 def run_one(recipe, job, policy, progress=None):
     """Returns (status, detail): done, skipped, failed or planned."""
-    if any(same_file(path, job.output) for path in job.inputs):
+    overwrites_source = any(same_file(path, job.output) for path in job.inputs)
+    if overwrites_source and not recipe.allow_overwrite_source:
         return "skipped", "output would overwrite the source"
-    if os.path.exists(job.output) and not policy.force:
+    if os.path.exists(job.output) and not policy.force and not overwrites_source:
         return "skipped", "output exists (use --force to overwrite)"
     if policy.dry_run:
         try:
