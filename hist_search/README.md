@@ -50,25 +50,47 @@ Now press **Ctrl-R**. Type to filter, Up/Down to choose, Enter to select.
 
 ## Usage
 
-The widget binds Ctrl-R. Inside the picker:
+The widget binds Ctrl-R, passing through whatever you had already typed on
+the command line as the initial query. Inside the picker:
 
 | Key | Action |
 | --- | --- |
-| Type | Filter the list. The query is matched fuzzily (case-insensitive). |
+| Type | Insert a character into the query at the cursor. Fuzzy matching is case-insensitive. |
 | `Tab` | Switch between FUZZY and REGEX mode. Regex matching is case-sensitive. |
-| `Up` / `Ctrl-P` | Move up the list. |
-| `Down` / `Ctrl-N` | Move down the list. |
-| `Backspace` | Delete the last character of the query. |
+| `Up` / `Ctrl-P` | Move up the list one match. |
+| `Down` / `Ctrl-N` | Move down the list one match. |
+| `PageUp` / `PageDown` | Jump a full page of matches. |
+| `Left` / `Ctrl-B` | Move the query cursor left. |
+| `Right` / `Ctrl-F` | Move the query cursor right. |
+| `Home` / `Ctrl-A` | Move the query cursor to the start. |
+| `End` / `Ctrl-E` | Move the query cursor to the end. |
+| `Backspace` / `Delete` | Remove the character before / at the cursor. |
+| `Ctrl-K` | Delete from the cursor to the end of the query. |
+| `Ctrl-U` | Delete from the cursor to the start of the query. |
 | `Enter` | Choose the highlighted command and put it on your command line. |
 | `Esc` / `Ctrl-C` | Cancel and leave the command line as it was. |
 
-You can also run the picker directly: `hist_search` prints the chosen command
-to standard output, which is how the widget captures it. It takes no
-arguments; it reads the history file named by the `HISTFILE` environment
-variable.
+You can also run the picker directly: `hist_search [initial-query]` prints
+the chosen command to standard output, which is how the widget captures it.
+It reads the history file named by the `HISTFILE` environment variable, and
+seeds the query box with `initial-query` if given.
 
 ```bash
 cmd=$(hist_search) && echo "You picked: $cmd"
+```
+
+### Customizing appearance
+
+Pick a built-in theme with `HIST_SEARCH_THEME` (`default` or the fzf-style
+`fzf`, which puts the match list above the prompt), or tune individual fields
+via env vars or a `~/.hist_searchrc` dotfile (`key=value` lines, `#` for
+comments; recognized keys: `theme`, `layout`, `selected_style`,
+`selected_indicator`, `unselected_indicator`, `info_style`, `mode_style`).
+Precedence, later wins: built-in theme -> dotfile -> env var.
+
+```bash
+export HIST_SEARCH_THEME=fzf
+export HIST_SEARCH_SELECTED_STYLE=1;35    # override just one field
 ```
 
 ## How it behaves
@@ -86,8 +108,11 @@ cmd=$(hist_search) && echo "You picked: $cmd"
 - **Regex ranking.** Commands whose match starts earliest rank first, then the
   more recent.
 - **Display.** Up to 10 matches (fewer on very short terminals), plus a status
-  line showing matches/total. Multi-line commands show a `⏎` marker between
+  line showing position/total. Multi-line commands show a `⏎` marker between
   lines.
+- **Appearance.** Controlled by a theme (`default` or `fzf`), resolved from a
+  built-in theme, then `~/.hist_searchrc`, then env vars (see "Customizing
+  appearance" above).
 - **The terminal.** The picker draws on `/dev/tty`, so it works inside
   `$(...)` capture and does not disturb what is already on screen.
 

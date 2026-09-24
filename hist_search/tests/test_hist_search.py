@@ -63,7 +63,6 @@ class ReadHistoryTests(unittest.TestCase):
         commands = hist_search.read_history(path)
         self.assertEqual(commands, ["ls -la", "git status"])
 
-
     def test_bash_timestamp_lines_are_not_commands(self):
         path = self._write("#1690000000\ngit status\n#1690000005\nls -la\n")
         self.assertEqual(hist_search.read_history(path), ["ls -la", "git status"])
@@ -157,6 +156,137 @@ class FilterCommandsTests(unittest.TestCase):
     def test_regex_mode_no_matches_is_empty(self):
         result = hist_search.filter_commands(self.commands, r"^nomatch", True)
         self.assertEqual(result, [])
+
+
+class BuildThemeTests(unittest.TestCase):
+    def _clear_env(self):
+        for env_name in list(hist_search.THEME_ENV_OVERRIDES.values()) + [
+            "HIST_SEARCH_THEME",
+            "HIST_SEARCH_CONFIG",
+        ]:
+            os.environ.pop(env_name, None)
+
+    def setUp(self):
+        self._clear_env()
+        self.addCleanup(self._clear_env)
+        # Point at a dotfile that doesn't exist by default, so tests
+        # aren't affected by a real ~/.hist_searchrc on the machine.
+        os.environ["HIST_SEARCH_CONFIG"] = "/nonexistent/.hist_searchrc"
+
+    def _write_config(self, content):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".hist_searchrc", delete=False)
+        f.write(content)
+        f.close()
+        self.addCleanup(os.remove, f.name)
+        os.environ["HIST_SEARCH_CONFIG"] = f.name
+        return f.name
+
+    def test_default_theme_has_below_layout_and_reverse_video_selection(self):
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["layout"], "below")
+        self.assertEqual(theme["selected_style"], "1;36;7")
+        self.assertEqual(theme["selected_indicator"], "> ")
+
+    def test_named_theme_selected_via_env_var(self):
+        os.environ["HIST_SEARCH_THEME"] = "fzf"
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["layout"], "above")
+        self.assertEqual(theme["selected_style"], "36")
+
+    def test_unknown_theme_name_falls_back_to_default(self):
+        theme = hist_search.build_theme("no-such-theme")
+        self.assertEqual(theme, hist_search.THEMES["default"])
+
+    def test_per_field_env_override_wins_over_named_theme(self):
+        os.environ["HIST_SEARCH_THEME"] = "fzf"
+        os.environ["HIST_SEARCH_LAYOUT"] = "below"
+        os.environ["HIST_SEARCH_SELECTED_INDICATOR"] = "* "
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["layout"], "below")
+        self.assertEqual(theme["selected_indicator"], "* ")
+        # Untouched fields still come from the named theme.
+        self.assertEqual(theme["selected_style"], "36")
+
+    def test_dotfile_theme_key_selects_named_theme(self):
+        self._write_config("theme=fzf\n")
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["layout"], "above")
+        self.assertEqual(theme["selected_style"], "36")
+
+    def test_dotfile_field_overrides_named_theme(self):
+        self._write_config("theme=fzf\nselected_style=1;35\n# a comment\n\nlayout=below\n")
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["selected_style"], "1;35")
+        self.assertEqual(theme["layout"], "below")
+
+    def test_env_var_wins_over_dotfile(self):
+        self._write_config("theme=fzf\nselected_style=1;35\n")
+        os.environ["HIST_SEARCH_SELECTED_STYLE"] = "44"
+        theme = hist_search.build_theme()
+        self.assertEqual(theme["selected_style"], "44")
+
+    def test_missing_dotfile_is_ignored(self):
+        os.environ["HIST_SEARCH_CONFIG"] = "/nonexistent/.hist_searchrc"
+        self.assertEqual(hist_search.read_config_file(os.environ["HIST_SEARCH_CONFIG"]), {})
+        theme = hist_search.build_theme()
+        self.assertEqual(theme, hist_search.THEMES["default"])
+
+
+class ArrangeRowsTests(unittest.TestCase):
+    def test_below_layout_keeps_prompt_first_then_body_then_footer(self):
+        lines, prompt_row = hist_search.arrange_rows("PROMPT", ["a", "b"], "FOOTER", "below")
+        self.assertEqual(lines, ["PROMPT", "a", "b", "FOOTER"])
+        self.assertEqual(prompt_row, 0)
+
+    def test_above_layout_puts_footer_first_and_reverses_body_before_prompt(self):
+        lines, prompt_row = hist_search.arrange_rows("PROMPT", ["a", "b"], "FOOTER", "above")
+        self.assertEqual(lines, ["FOOTER", "b", "a", "PROMPT"])
+        self.assertEqual(prompt_row, len(lines) - 1)
+
+    def test_unknown_layout_defaults_to_below_behavior(self):
+        lines, prompt_row = hist_search.arrange_rows("PROMPT", ["a"], "FOOTER", "sideways")
+        self.assertEqual(lines, ["PROMPT", "a", "FOOTER"])
+        self.assertEqual(prompt_row, 0)
+
+
+class ReadKeyTests(unittest.TestCase):
+    def _read(self, raw_bytes):
+        r, w = os.pipe()
+        try:
+            os.write(w, raw_bytes)
+            return hist_search._read_key(r)
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_plain_character(self):
+        self.assertEqual(self._read(b"a"), b"a")
+
+    def test_up_arrow_csi(self):
+        self.assertEqual(self._read(b"\x1b[A"), b"\x1b[A")
+
+    def test_up_arrow_ss3_normalized_to_csi(self):
+        self.assertEqual(self._read(b"\x1bOA"), b"\x1b[A")
+
+    def test_left_and_right_arrows(self):
+        self.assertEqual(self._read(b"\x1b[D"), b"\x1b[D")
+        self.assertEqual(self._read(b"\x1b[C"), b"\x1b[C")
+
+    def test_page_up_and_page_down_multi_byte_csi(self):
+        self.assertEqual(self._read(b"\x1b[5~"), b"\x1b[5~")
+        self.assertEqual(self._read(b"\x1b[6~"), b"\x1b[6~")
+
+    def test_delete_home_end_multi_byte_csi(self):
+        self.assertEqual(self._read(b"\x1b[3~"), b"\x1b[3~")
+        self.assertEqual(self._read(b"\x1b[1~"), b"\x1b[1~")
+        self.assertEqual(self._read(b"\x1b[4~"), b"\x1b[4~")
+
+    def test_home_and_end_letter_csi(self):
+        self.assertEqual(self._read(b"\x1b[H"), b"\x1b[H")
+        self.assertEqual(self._read(b"\x1b[F"), b"\x1b[F")
+
+    def test_lone_escape_with_nothing_pending(self):
+        self.assertEqual(self._read(b"\x1b"), b"\x1b")
 
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
