@@ -116,6 +116,89 @@ def find_icon(appimage_path, extract_dir=None):
     # 3. Fallback to a standard icon
     return 'application-x-executable'
 
+def find_icon_for_executable(exec_path):
+    """Search for an icon for the executable in likely locations."""
+    search_dirs = [exec_path.parent]
+    # If in a 'bin' or similar directory, also search parent and siblings
+    if exec_path.parent.name.lower() in ('bin', 'sbin', 'scripts', 'build', 'out'):
+        parent = exec_path.parent.parent
+        if parent.exists():
+            search_dirs.append(parent)
+            for sibling in parent.iterdir():
+                if sibling.is_dir() and sibling != exec_path.parent:
+                    search_dirs.append(sibling)
+    # Add subdirectories
+    for d in list(search_dirs):
+        for sub in d.iterdir():
+            if sub.is_dir():
+                search_dirs.append(sub)
+    # Search for icon files
+    for d in search_dirs:
+        for ext in ('.png', '.svg', '.xpm', '.ico'):
+            for f in d.glob(f'*{ext}'):
+                return str(f)
+    return 'application-x-executable'
+
+ARCHIVE_SUFFIXES = ('.tar.gz', '.tgz', '.tar.bz2', '.tar.xz', '.tar.zst', '.tar', '.zip', '.rar', '.7z')
+
+def archive_stem(filename):
+    lower = filename.lower()
+    for suffix in ARCHIVE_SUFFIXES:
+        if lower.endswith(suffix):
+            return filename[:-len(suffix)]
+    return Path(filename).stem
+
+def find_app_root(extract_dir):
+    entries = list(extract_dir.iterdir())
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return extract_dir
+
+def find_launcher(app_root):
+    name = app_root.name.lower()
+    candidates = []
+    for d in (app_root / 'bin', app_root):
+        if d.is_dir():
+            candidates = [f for f in sorted(d.iterdir()) if f.is_file() and os.access(f, os.X_OK)]
+        if candidates:
+            break
+    matching = [f for f in candidates if f.stem.lower() in name or name in f.stem.lower()]
+    matching.sort(key=lambda f: len(f.name))
+    if matching:
+        return matching[0]
+    return candidates[0] if len(candidates) == 1 else None
+
+def install_precompiled(app_root, install_name, stable_name, dryrun=False, verbose=False):
+    """Move an unpacked, ready-to-run application into ~/Applications and add a launcher."""
+    launcher = find_launcher(app_root)
+    if not launcher:
+        return False
+    app_dir = Path.home() / 'Applications'
+    dest = app_dir / install_name
+    stable = app_dir / stable_name
+    if dest.exists():
+        print(f"{dest} already exists; remove it first.", file=sys.stderr)
+        sys.exit(1)
+    if stable.exists() and not stable.is_symlink():
+        print(f"{stable} exists and is not a symlink; not replacing it.", file=sys.stderr)
+        sys.exit(1)
+    rel_launcher = launcher.relative_to(app_root)
+    icon_path = find_icon_for_executable(launcher)
+    if icon_path != 'application-x-executable':
+        icon_path = str(stable / Path(icon_path).relative_to(app_root))
+    if verbose or dryrun:
+        print(f"Moving {app_root} to {dest}")
+        print(f"Symlinking {dest} to {stable}")
+    if not dryrun:
+        app_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(app_root), dest)
+        if stable.is_symlink():
+            stable.unlink()
+        stable.symlink_to(dest)
+    print(f"Installed {dest} and symlinked as {stable}")
+    create_launcher(stable / rel_launcher, None, stable_name, icon_path, dryrun=dryrun, verbose=verbose)
+    return True
+
 def main():
 
     parser = argparse.ArgumentParser(description='Install AppImage, .deb, or build from archive')
@@ -128,29 +211,6 @@ def main():
 
     def is_flatpak(filename):
         return filename.lower().endswith('.flatpak')
-
-    def find_icon_for_executable(exec_path):
-        """Search for an icon for the executable in likely locations."""
-        search_dirs = [exec_path.parent]
-        # If in a 'bin' or similar directory, also search parent and siblings
-        if exec_path.parent.name.lower() in ('bin', 'sbin', 'scripts', 'build', 'out'):
-            parent = exec_path.parent.parent
-            if parent.exists():
-                search_dirs.append(parent)
-                for sibling in parent.iterdir():
-                    if sibling.is_dir() and sibling != exec_path.parent:
-                        search_dirs.append(sibling)
-        # Add subdirectories
-        for d in list(search_dirs):
-            for sub in d.iterdir():
-                if sub.is_dir():
-                    search_dirs.append(sub)
-        # Search for icon files
-        for d in search_dirs:
-            for ext in ('.png', '.svg', '.xpm', '.ico'):
-                for f in d.glob(f'*{ext}'):
-                    return str(f)
-        return 'application-x-executable'
 
     file_path = Path(args.file).expanduser().resolve()
     if not file_path.exists():
@@ -314,8 +374,14 @@ def main():
                 break
         if build_found:
             run([find_helper('mmmake')], dryrun=args.dryrun, verbose=args.verbose, cwd=root)
+        elif args.dryrun:
+            print(f"Would look for a ready-to-run application in {extract_dir}")
         else:
-            print(f"Extracted to {extract_dir}, but no build script found.")
+            app_root = find_app_root(extract_dir)
+            if install_precompiled(app_root, archive_stem(file_path.name), archive_stem(file_path.name) if app_root == extract_dir else app_root.name, verbose=args.verbose):
+                shutil.rmtree(extract_dir, ignore_errors=True)
+            else:
+                print(f"Extracted to {extract_dir}, but no build script or launcher found.")
         return
 
     # If the file ends in .run, is executable, or `file` reports a script,

@@ -60,4 +60,22 @@ mkdir build && cd build || exit 1
 [[ ! -e ../proj-1.0.tar.gz ]] \
   && check "the archive is removed after a successful install" ok || check "the archive is removed after a successful install" no
 
+# Precompiled application archive: moved into ~/Applications with a stable symlink and launcher.
+cd "$work" || exit 1
+mkdir -p pre/coolide/bin
+printf '#!/bin/sh\nexit 0\n' > pre/coolide/bin/cool.sh
+printf '#!/bin/sh\nexit 0\n' > pre/coolide/bin/format.sh
+chmod +x pre/coolide/bin/cool.sh pre/coolide/bin/format.sh
+: > pre/coolide/bin/cool.png
+tar czf coolide-2.0-linux.tar.gz -C pre coolide
+mkdir build2 && cd build2 || exit 1
+"$BIN/plonk" ../coolide-2.0-linux.tar.gz >/dev/null 2>&1
+[[ -x "$HOME/Applications/coolide-2.0-linux/bin/cool.sh" && -L "$HOME/Applications/coolide" ]] \
+  && check "a precompiled archive is installed with a stable symlink" ok || check "a precompiled archive is installed with a stable symlink" no
+grep -q '^Exec=.*Applications/coolide/bin/cool.sh' "$HOME/.local/share/applications/coolide.desktop" 2>/dev/null \
+  && grep -q '^Icon=.*Applications/coolide/bin/cool.png' "$HOME/.local/share/applications/coolide.desktop" 2>/dev/null \
+  && check "the launcher uses the main script and icon via the symlink" ok || check "the launcher uses the main script and icon via the symlink" no
+[[ ! -e coolide-2.0-linux_extract ]] \
+  && check "the extraction folder is cleaned up" ok || check "the extraction folder is cleaned up" no
+
 exit $((fails > 0))
