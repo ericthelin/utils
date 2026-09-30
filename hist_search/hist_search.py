@@ -39,7 +39,7 @@ of the chosen theme or dotfile:
   HIST_SEARCH_SELECTED_INDICATOR   e.g. "> "
   HIST_SEARCH_UNSELECTED_INDICATOR e.g. "  "
   HIST_SEARCH_INFO_STYLE           SGR code for the footer/info line
-  HIST_SEARCH_MODE_STYLE           SGR code for the [FUZZY]/[REGEX] label
+  HIST_SEARCH_MODE_STYLE           SGR code for the [FUZZY RECENT]-style label
 """
 
 import os
@@ -246,7 +246,16 @@ def arrange_rows(prompt_line, body_lines, footer_line, layout):
     return [prompt_line] + body_lines + [footer_line], 0
 
 
-def filter_commands(commands, query, regex_mode):
+def filter_commands(commands, query, regex_mode, best_match=False):
+    """Return matches for query, in either "best match" or "most recent"
+    order.
+
+    `best_match=True` ranks by score (span/position for fuzzy, match
+    start for regex), same as before. `best_match=False` (the default)
+    keeps matches in the order they were found while scanning
+    `commands`, which is already most-recent-first (see read_history),
+    so recency wins over match quality.
+    """
     if not query:
         return list(enumerate(commands))
     scorer = regex_score if regex_mode else fuzzy_score
@@ -255,7 +264,8 @@ def filter_commands(commands, query, regex_mode):
         score = scorer(query, cmd)
         if score is not None:
             scored.append((score, idx, cmd))
-    scored.sort(key=lambda x: (x[0], x[1]))
+    if best_match:
+        scored.sort(key=lambda x: (x[0], x[1]))
     return [(idx, cmd) for _score, idx, cmd in scored]
 
 
@@ -315,6 +325,7 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
     query = initial_query
     cursor = len(query)  # edit position within query, for Left/Right
     regex_mode = False
+    best_match = False
     selected = 0
     top = 0
     # Which row (0 = top of the reserved strip) the terminal cursor is
@@ -348,7 +359,7 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
     write(f"\x1b[{total_rows}A\r")
 
     def render():
-        matches = filter_commands(commands, query, regex_mode)
+        matches = filter_commands(commands, query, regex_mode, best_match)
         nonlocal selected, top, cursor_row
         if selected >= len(matches):
             selected = max(0, len(matches) - 1)
@@ -358,11 +369,12 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
             top = selected - list_height + 1
 
         mode = "REGEX" if regex_mode else "FUZZY"
+        sort = "BEST" if best_match else "RECENT"
         mode_style = _sgr(theme["mode_style"])
-        mode_label = f"[{mode}]"
+        mode_label = f"[{mode} {sort}]"
         if mode_style:
             mode_label = f"{mode_style}{mode_label}{RESET}"
-        plain_prefix = f"[{mode}] > "
+        plain_prefix = f"[{mode} {sort}] > "
         prompt_line = f"{mode_label} > {query}"
 
         body_lines = []
@@ -383,7 +395,7 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
             body_lines.append(line)
 
         position = selected + 1 if matches else 0
-        footer = f"{position}/{len(matches)}  Enter:select  Tab:toggle-regex  Ctrl-C/Esc:cancel"
+        footer = f"{position}/{len(matches)}  Enter:select  Tab:toggle-regex  Ctrl-T:toggle-sort  Ctrl-C/Esc:cancel"
         footer_line = footer[: width - 1]
         info_style = _sgr(theme["info_style"])
         if info_style:
@@ -443,6 +455,10 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
                 return None
             elif key == b"\t":
                 regex_mode = not regex_mode
+                selected = 0
+                top = 0
+            elif key == b"\x14":  # Ctrl-T: toggle best-match / most-recent sort
+                best_match = not best_match
                 selected = 0
                 top = 0
             elif key in (b"\x1b[A", b"\x10"):  # Up / Ctrl-P

@@ -149,6 +149,25 @@ class FilterCommandsTests(unittest.TestCase):
         result = hist_search.filter_commands(self.commands, "gts", False)
         self.assertTrue(any("git status" in c for _i, c in result))
 
+    def test_default_sort_is_most_recent_not_best_match(self):
+        # "git" appears in both entries; recency order (list index order,
+        # since read_history's output is already most-recent-first) should
+        # be preserved rather than sorted by match score.
+        result = hist_search.filter_commands(self.commands, "git", False)
+        self.assertEqual([c for _i, c in result], ['git commit -m "fix bug"', "git status"])
+
+    def test_best_match_true_ranks_by_score(self):
+        result = hist_search.filter_commands(self.commands, "git", False, best_match=True)
+        # Best match orders by (span, start) regardless of recency.
+        scored = [
+            (hist_search.fuzzy_score("git", cmd), idx)
+            for idx, cmd in enumerate(self.commands)
+            if hist_search.fuzzy_score("git", cmd) is not None
+        ]
+        scored.sort(key=lambda x: (x[0], x[1]))
+        expected_order = [self.commands[idx] for _score, idx in scored]
+        self.assertEqual([c for _i, c in result], expected_order)
+
     def test_regex_mode_filters_by_pattern(self):
         result = hist_search.filter_commands(self.commands, r"^ls", True)
         self.assertEqual(result[0][1], "ls -la /tmp")
