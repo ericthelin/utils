@@ -395,7 +395,7 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
             body_lines.append(line)
 
         position = selected + 1 if matches else 0
-        footer = f"{position}/{len(matches)}  Enter:select  Tab:toggle-regex  Ctrl-T:toggle-sort  Ctrl-C/Esc:cancel"
+        footer = f"{position}/{len(matches)}  Enter:select  Tab:cycle-mode  Ctrl-C/Esc:cancel"
         footer_line = footer[: width - 1]
         info_style = _sgr(theme["info_style"])
         if info_style:
@@ -454,10 +454,10 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
                 clear_and_home()
                 return None
             elif key == b"\t":
-                regex_mode = not regex_mode
-                selected = 0
-                top = 0
-            elif key == b"\x14":  # Ctrl-T: toggle best-match / most-recent sort
+                # Cycle through the four mode/sort combinations:
+                # FUZZY RECENT -> FUZZY BEST -> REGEX RECENT -> REGEX BEST -> ...
+                if best_match:
+                    regex_mode = not regex_mode
                 best_match = not best_match
                 selected = 0
                 top = 0

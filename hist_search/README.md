@@ -11,11 +11,11 @@ An illustrative session:
 
 ```text
 $ ▮                      <- you press Ctrl-R
-[FUZZY] > dkr up
+[FUZZY RECENT] > dkr up
 > docker compose up -d
   docker compose up
   docker stack deploy -c stack.yml up-demo
-4/5821  Enter:select  Tab:toggle-regex  Ctrl-C/Esc:cancel
+4/5821  Enter:select  Tab:cycle-mode  Ctrl-C/Esc:cancel
 ```
 
 ## Why use it
@@ -24,8 +24,9 @@ $ ▮                      <- you press Ctrl-R
   finds `docker compose up`. No exact substring needed.
 - **Or search by pattern.** Press Tab to switch to regular expressions
   (`^git (push|pull)`) when you need precision.
-- **Smart ranking.** The tightest match wins, then the earliest, then the most
-  recent, so what you want is usually the top result.
+- **Pick the ranking that fits.** Press Tab again to switch from
+  most-recent-first (the default) to best-match ranking, in either fuzzy or
+  regex mode.
 - **No fzf, no plugins, no install step.** One Python file that uses only the
   standard library, plus a short shell snippet to bind the key.
 - **It stays out of your way.** The picker opens inline under your prompt
@@ -56,7 +57,7 @@ the command line as the initial query. Inside the picker:
 | Key | Action |
 | --- | --- |
 | Type | Insert a character into the query at the cursor. Fuzzy matching is case-insensitive. |
-| `Tab` | Switch between FUZZY and REGEX mode. Regex matching is case-sensitive. |
+| `Tab` | Cycle through FUZZY RECENT -> FUZZY BEST -> REGEX RECENT -> REGEX BEST. Regex matching is case-sensitive. |
 | `Up` / `Ctrl-P` | Move up the list one match. |
 | `Down` / `Ctrl-N` | Move down the list one match. |
 | `PageUp` / `PageDown` | Jump a full page of matches. |
@@ -102,11 +103,11 @@ export HIST_SEARCH_SELECTED_STYLE=1;35    # override just one field
   kept together. Bash timestamp lines (`#1690000000`) are ignored.
 - **Order.** Newest first, with each distinct command shown once (its most
   recent use).
-- **Fuzzy ranking.** The characters you type must appear in order. Results with
-  the smallest gap between the first and last matched character rank first,
-  then those matching earlier in the line, then the more recent command.
-- **Regex ranking.** Commands whose match starts earliest rank first, then the
-  more recent.
+- **Ranking.** RECENT mode (the default) keeps matches in most-recent-first
+  order. BEST mode sorts by match quality instead: for fuzzy matches, the
+  smallest gap between the first and last matched character wins, then the
+  earliest match, then recency; for regex matches, the earliest match start
+  wins, then recency.
 - **Display.** Up to 10 matches (fewer on very short terminals), plus a status
   line showing position/total. Multi-line commands show a `⏎` marker between
   lines.

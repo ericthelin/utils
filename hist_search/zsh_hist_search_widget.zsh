@@ -4,11 +4,10 @@
 #   source /path/to/utils/hist_search/zsh_hist_search_widget.zsh
 #
 # Usage inside the picker:
-# Usage inside the picker:
-#   type to fuzzy filter, Tab to switch to regex mode, Ctrl-T to switch
-#   between "most recent match" (default) and "best match" ranking,
-#   Up/Down (or Ctrl-P/Ctrl-N) to move one match, PageUp/PageDown to
-#   jump a full page of matches, Enter to select, Esc/Ctrl-C to cancel.
+#   type to fuzzy filter, Tab to cycle through fuzzy/regex mode and
+#   most-recent/best-match ranking (4 combinations), Up/Down (or
+#   Ctrl-P/Ctrl-N) to move one match, PageUp/PageDown to jump a full
+#   page of matches, Enter to select, Esc/Ctrl-C to cancel.
 #   Editing the search text: Left/Right (or Ctrl-B/Ctrl-F) to move the
 #   cursor, Home/Ctrl-A and End/Ctrl-E to jump to the start/end,
 #   Backspace/Delete to remove a character, Ctrl-K to kill to end of

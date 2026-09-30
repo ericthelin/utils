@@ -361,7 +361,8 @@ class PickerEndToEndTests(unittest.TestCase):
         self.assertTrue(result.endswith("git status"), result[-80:])
 
     def test_tab_switches_to_regex_mode(self):
-        result = run_picker(HISTORY, [b"\t", b"^", b"l", b"s", b"\r"])
+        # Two Tabs cycle FUZZY RECENT -> FUZZY BEST -> REGEX RECENT.
+        result = run_picker(HISTORY, [b"\t", b"\t", b"^", b"l", b"s", b"\r"])
         self.assertTrue(result.endswith("ls -la"), result[-80:])
 
     def test_escape_cancels_without_output(self):
