@@ -179,7 +179,7 @@ def install_precompiled(app_root, install_name, stable_name, dryrun=False, verbo
     if dest.exists():
         print(f"{dest} already exists; remove it first.", file=sys.stderr)
         sys.exit(1)
-    if stable.exists() and not stable.is_symlink():
+    if stable != dest and stable.exists() and not stable.is_symlink():
         print(f"{stable} exists and is not a symlink; not replacing it.", file=sys.stderr)
         sys.exit(1)
     rel_launcher = launcher.relative_to(app_root)
@@ -188,15 +188,27 @@ def install_precompiled(app_root, install_name, stable_name, dryrun=False, verbo
         icon_path = str(stable / Path(icon_path).relative_to(app_root))
     if verbose or dryrun:
         print(f"Moving {app_root} to {dest}")
-        print(f"Symlinking {dest} to {stable}")
+        if stable != dest:
+            print(f"Symlinking {dest} to {stable}")
     if not dryrun:
         app_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(app_root), dest)
-        if stable.is_symlink():
-            stable.unlink()
-        stable.symlink_to(dest)
-    print(f"Installed {dest} and symlinked as {stable}")
+        if stable != dest:
+            if stable.is_symlink():
+                stable.unlink()
+            stable.symlink_to(dest)
+    print(f"Installed {dest}" + (f" and symlinked as {stable}" if stable != dest else ""))
     create_launcher(stable / rel_launcher, None, stable_name, icon_path, dryrun=dryrun, verbose=verbose)
+    return True
+
+def install_extracted(extract_dir, verbose=False):
+    app_root = find_app_root(extract_dir)
+    name = extract_dir.name[:-len('_extract')] if extract_dir.name.endswith('_extract') else extract_dir.name
+    install_name = name[:-len('.tar')] if name.endswith('.tar') else name
+    stable_name = install_name if app_root == extract_dir else app_root.name
+    if not install_precompiled(app_root, install_name, stable_name, verbose=verbose):
+        return False
+    shutil.rmtree(extract_dir, ignore_errors=True)
     return True
 
 def main():
@@ -216,6 +228,12 @@ def main():
     if not file_path.exists():
         print(f"File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
+
+    if file_path.is_dir():
+        if not install_extracted(file_path, args.verbose):
+            print(f"No launcher found in {file_path}.", file=sys.stderr)
+            sys.exit(2)
+        return
 
     if is_appimage(file_path.name):
         app_dir = Path.home() / 'Applications'
@@ -358,11 +376,6 @@ def main():
         extract_dir.mkdir(parents=True, exist_ok=True)
         cmd = [find_helper('tgz'), str(file_path)]
         run(cmd, dryrun=args.dryrun, verbose=args.verbose, cwd=extract_dir)
-        # Optionally delete archive after extraction if not --copy
-        if not args.copy and not args.dryrun:
-            if args.verbose:
-                print(f"Deleting {file_path}")
-            file_path.unlink()
         # Look for build scripts
         build_found = False
         for root, dirs, files in os.walk(extract_dir):
@@ -372,16 +385,26 @@ def main():
                     break
             if build_found:
                 break
+        installed = False
         if build_found:
             run([find_helper('mmmake')], dryrun=args.dryrun, verbose=args.verbose, cwd=root)
+            installed = True
         elif args.dryrun:
             print(f"Would look for a ready-to-run application in {extract_dir}")
         else:
-            app_root = find_app_root(extract_dir)
-            if install_precompiled(app_root, archive_stem(file_path.name), archive_stem(file_path.name) if app_root == extract_dir else app_root.name, verbose=args.verbose):
-                shutil.rmtree(extract_dir, ignore_errors=True)
-            else:
-                print(f"Extracted to {extract_dir}, but no build script or launcher found.")
+            installed = install_extracted(extract_dir, args.verbose)
+        if installed:
+            if not args.copy and not args.dryrun:
+                if args.verbose:
+                    print(f"Deleting {file_path}")
+                file_path.unlink()
+        elif not args.dryrun:
+            print(f"Extracted to {extract_dir}, but no build script or launcher found.")
+            print(f"Kept {file_path}; run plonk on {extract_dir} if it holds an application.")
+            if not args.copy and not args.no_prompt:
+                resp = input(f"Delete {file_path} anyway? [y/N] ").strip().lower()
+                if resp.startswith('y'):
+                    file_path.unlink()
         return
 
     # If the file ends in .run, is executable, or `file` reports a script,

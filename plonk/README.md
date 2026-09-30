@@ -79,7 +79,8 @@ plonk [options] <file>
 | An executable outside `~/Downloads` | Offers to create a launcher for it (it does not move or run it). |
 | `*.deb` | `sudo apt install <file>`; if that fails, `sudo apt --fix-broken install` and one retry. The `.deb` is deleted afterwards unless `--copy`. |
 | `*.flatpak` | `flatpak install --user <file>`. |
-| An archive (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.rar`, `.7z`, ...) | Extracted with `tgz` into `./<name>_extract`; the archive is deleted afterwards unless `--copy`. If a `Makefile`, `CMakeLists.txt` or `configure` script is found, `mmmake` is run in that folder. If only `build.sh` is found, `mmmake` runs but does not recognise it. If nothing buildable is found, `plonk` looks for a ready-to-run application (a folder such as Android Studio or an IDE, with an executable in `bin/` or at the top level): the folder is moved to `~/Applications/<archive-name>`, a stable symlink `~/Applications/<folder-name>` points at it (repointed on upgrade), and a launcher is written using the executable whose name best matches the folder and the first icon found. If no launcher can be identified you are told where the files are. |
+| An archive (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.rar`, `.7z`, ...) | Extracted with `tgz` into `./<name>_extract`. The archive is deleted only after the build or install succeeded, and never with `--copy`; if nothing could be installed it is kept (you are asked whether to delete it, default no, unless `--no-prompt`). If a `Makefile`, `CMakeLists.txt` or `configure` script is found, `mmmake` is run in that folder. If only `build.sh` is found, `mmmake` runs but does not recognise it. If nothing buildable is found, `plonk` looks for a ready-to-run application (a folder such as Android Studio or an IDE, with an executable in `bin/` or at the top level): the folder is moved to `~/Applications/<archive-name>`, a stable symlink `~/Applications/<folder-name>` points at it (repointed on upgrade), and a launcher is written using the executable whose name best matches the folder and the first icon found. If no launcher can be identified you are told where the files are. |
+| A folder (for example a leftover `<name>_extract`) | Treated like an unpacked prebuilt application: moved into `~/Applications`, symlinked and given a launcher. Use this to finish an install that stopped after extraction. |
 | `*.run`, or a script | Made executable and **run**. |
 | Anything else | `Unhandled file type`, exit status 2. |
 
@@ -179,7 +180,7 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 - **`Unhandled file type`**: `plonk` does not recognise the file. Give it a
   `.AppImage`, `.deb`, `.flatpak`, archive, `.run` file or script.
 - **No launcher was created for an archive**: no executable in `bin/` or the
-  top level matched the folder name. Launch it from `./<name>_extract`.
+  top level matched the folder name. The archive is kept; launch it from `./<name>_extract`, or point `plonk` at that folder once you know the launcher.
 - **The build step does nothing**: `mmmake` could not find a build system in
   the extracted folder. Look in `./<name>_extract`.
 

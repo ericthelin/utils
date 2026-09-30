@@ -78,4 +78,20 @@ grep -q '^Exec=.*Applications/coolide/bin/cool.sh' "$HOME/.local/share/applicati
 [[ ! -e coolide-2.0-linux_extract ]] \
   && check "the extraction folder is cleaned up" ok || check "the extraction folder is cleaned up" no
 
+# Nothing installable: the archive is kept, and plonk can finish from the extracted folder.
+cd "$work" || exit 1
+mkdir -p data/stuff && echo hi > data/stuff/readme.txt
+tar czf stuffpack-1.0.tar.gz data
+mkdir build3 && cd build3 || exit 1
+"$BIN/plonk" --no-prompt ../stuffpack-1.0.tar.gz >/dev/null 2>&1
+[[ -f ../stuffpack-1.0.tar.gz && -d stuffpack-1.0.tar_extract ]] \
+  && check "an archive that could not be installed is kept" ok || check "an archive that could not be installed is kept" no
+rm -rf stuffpack-1.0.tar_extract/data
+mkdir -p stuffpack-1.0.tar_extract/recov/bin
+printf '#!/bin/sh\nexit 0\n' > stuffpack-1.0.tar_extract/recov/bin/recov
+chmod +x stuffpack-1.0.tar_extract/recov/bin/recov
+"$BIN/plonk" stuffpack-1.0.tar_extract >/dev/null 2>&1
+[[ -x "$HOME/Applications/stuffpack-1.0/bin/recov" && -L "$HOME/Applications/recov" && ! -e stuffpack-1.0.tar_extract ]] \
+  && check "an extracted folder left behind can be installed directly" ok || check "an extracted folder left behind can be installed directly" no
+
 exit $((fails > 0))
