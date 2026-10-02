@@ -40,13 +40,45 @@ of the chosen theme or dotfile:
   HIST_SEARCH_UNSELECTED_INDICATOR e.g. "  "
   HIST_SEARCH_INFO_STYLE           SGR code for the footer/info line
   HIST_SEARCH_MODE_STYLE           SGR code for the [FUZZY RECENT]-style label
+
+Fuzzy mode also understands fzf-style extended search syntax:
+  space-separated terms     AND (every term must match)
+  term1|term2                OR, no spaces around '|'
+  ^term                      match must start with term
+  term$                      match must end with term
+  ^term$                     match must equal term exactly
+  'term                      match must contain term as an exact substring
+  !term (and the ^/$/' forms above) negate the term
+Matching is case-insensitive unless the query contains an uppercase
+letter, in which case it becomes case-sensitive (smart case, like fzf).
+The query box also accepts Unicode input (e.g. accented letters), not
+just ASCII.
+
+The query/match list supports a mouse: wheel up/down moves the
+selection, and clicking a row selects it (click-to-select needs the
+terminal to answer a cursor-position query, so it is silently
+unavailable in environments that do not, e.g. some multiplexers).
+Requires a terminal that understands SGR mouse reporting.
+
+Key bindings can be rebound (actions: select, cancel, cycle_mode, up,
+down, page_up, page_down, left, right, home, end, delete, kill_to_end,
+kill_to_start, backspace) via a dotfile line (key_<action>=<spec>) or a
+HIST_SEARCH_KEY_<ACTION> env var (env wins), using names like "tab",
+"enter", "esc", "up", "ctrl-y". Example:
+  key_cancel=ctrl-g
+
+The terminal can be resized while the picker is open; the picker
+reflows to the new width, but keeps its original height/scroll
+position to avoid losing its place on screen.
 """
 
 import os
 import re
 import select
+import signal
 import sys
 import termios
+import time
 import tty
 
 
@@ -105,7 +137,7 @@ def read_history(path):
     return deduped
 
 
-def fuzzy_score(query, text):
+def fuzzy_score(query, text, case_sensitive=False):
     """Return score (lower is better) or None if no match.
 
     Builds a real regex out of the query characters (each character
@@ -118,7 +150,8 @@ def fuzzy_score(query, text):
     if not query:
         return 0
     pattern = ".*?".join(re.escape(ch) for ch in query)
-    m = re.search(pattern, text, re.IGNORECASE)
+    flags = 0 if case_sensitive else re.IGNORECASE
+    m = re.search(pattern, text, flags)
     if not m:
         return None
     span = m.end() - m.start()
@@ -135,6 +168,97 @@ def regex_score(query, text):
     if not m:
         return None
     return m.start()
+
+
+def _is_special_term(term):
+    """True if `term` uses fzf-style extended-search syntax (prefix
+    '^', suffix '$', exact-substring "'", or negation '!') rather than
+    being a plain fuzzy term."""
+    return term.startswith(("^", "!", "'")) or term.endswith("$")
+
+
+def parse_extended_query(query):
+    """Split an fzf-style extended-search query into AND groups of OR
+    alternatives.
+
+    Top-level tokens are space-separated (AND). A token containing '|'
+    is itself a set of OR alternatives (e.g. "foo|bar baz" means (foo OR
+    bar) AND baz), matching fzf's extended-search mode.
+    """
+    return [token.split("|") for token in query.split()]
+
+
+def _match_leaf(leaf, text, case_sensitive):
+    """Evaluate one extended-syntax leaf term against text.
+
+    Returns (matched, score): score is a (span, start) tuple used only
+    to rank matches (lower ranks first); exact/anchor/negated leaves
+    that match contribute (0, 0) since they have no useful span to rank
+    by, only the plain-fuzzy case produces a real span.
+    """
+    negate = leaf.startswith("!")
+    if negate:
+        leaf = leaf[1:]
+    if not leaf:
+        return (not negate, (0, 0))
+
+    if not (leaf.startswith("^") or leaf.startswith("'") or leaf.endswith("$")):
+        score = fuzzy_score(leaf, text, case_sensitive)
+        matched = score is not None
+        if negate:
+            return (not matched, (0, 0))
+        return (matched, score if matched else (0, 0))
+
+    haystack = text if case_sensitive else text.lower()
+    needle = leaf if case_sensitive else leaf.lower()
+    if needle.startswith("^") and needle.endswith("$") and len(needle) > 1:
+        matched = haystack == needle[1:-1]
+    elif needle.startswith("^"):
+        matched = haystack.startswith(needle[1:])
+    elif needle.endswith("$"):
+        matched = haystack.endswith(needle[:-1])
+    else:  # leading "'": exact substring
+        matched = needle[1:] in haystack
+    if negate:
+        matched = not matched
+    return (matched, (0, 0))
+
+
+def extended_score(query, text):
+    """fzf-style extended search on top of plain fuzzy matching.
+
+    A query is split into space-separated AND groups, each of which may
+    be a set of '|'-joined OR alternatives (see parse_extended_query).
+    Each leaf term is a plain fuzzy term, or uses one of fzf's markers:
+    '^prefix', 'suffix$', '^exact$', "'exact-substring", or a '!'-negated
+    form of any of those. Smart-case applies to the whole query: any
+    uppercase letter anywhere makes every term case-sensitive.
+
+    Returns a combined score (lower ranks first) if every AND group has
+    at least one matching alternative, else None. A single plain term
+    (the common case) is forwarded straight to fuzzy_score.
+    """
+    if not query:
+        return 0
+
+    groups = parse_extended_query(query)
+    case_sensitive = any(ch.isupper() for ch in query)
+    if len(groups) == 1 and len(groups[0]) == 1 and not _is_special_term(groups[0][0]):
+        return fuzzy_score(query, text, case_sensitive)
+
+    total_span = 0
+    total_start = 0
+    for group in groups:
+        best = None
+        for leaf in group:
+            matched, score = _match_leaf(leaf, text, case_sensitive)
+            if matched and (best is None or score < best):
+                best = score
+        if best is None:
+            return None
+        total_span += best[0]
+        total_start += best[1]
+    return (total_span, total_start)
 
 
 MAX_VISIBLE_ROWS = 10
@@ -233,6 +357,79 @@ def build_theme(name=None):
     return theme
 
 
+# Default key bindings, as the raw byte sequences _read_key() produces.
+# Each action maps to a tuple of alternative sequences that trigger it.
+DEFAULT_KEYMAP = {
+    "select": (b"\r", b"\n"),
+    "cancel": (b"\x1b", b"\x03"),
+    "cycle_mode": (b"\t",),
+    "up": (b"\x1b[A", b"\x10"),
+    "down": (b"\x1b[B", b"\x0e"),
+    "page_up": (b"\x1b[5~",),
+    "page_down": (b"\x1b[6~",),
+    "left": (b"\x1b[D", b"\x02"),
+    "right": (b"\x1b[C", b"\x06"),
+    "home": (b"\x1b[H", b"\x1b[1~", b"\x01"),
+    "end": (b"\x1b[F", b"\x1b[4~", b"\x05"),
+    "delete": (b"\x1b[3~",),
+    "kill_to_end": (b"\x0b",),
+    "kill_to_start": (b"\x15",),
+    "backspace": (b"\x7f", b"\x08"),
+}
+
+# Named keys recognized by _parse_key_spec, for config/env key rebinding.
+NAMED_KEYS = {
+    "enter": b"\r",
+    "tab": b"\t",
+    "esc": b"\x1b",
+    "escape": b"\x1b",
+    "up": b"\x1b[A",
+    "down": b"\x1b[B",
+    "left": b"\x1b[D",
+    "right": b"\x1b[C",
+    "home": b"\x1b[H",
+    "end": b"\x1b[F",
+    "pageup": b"\x1b[5~",
+    "pagedown": b"\x1b[6~",
+    "delete": b"\x1b[3~",
+    "backspace": b"\x7f",
+}
+
+# Actions that can be rebound via a "key_<action>" dotfile line or a
+# HIST_SEARCH_KEY_<ACTION> env var (env wins). Rebinding an action
+# replaces its default bindings with the single given key.
+KEY_BIND_ENV = {action: f"HIST_SEARCH_KEY_{action.upper()}" for action in DEFAULT_KEYMAP}
+
+
+def _parse_key_spec(spec):
+    """Parse a user-facing key name ("tab", "ctrl-y", ...) into the raw
+    byte sequence _read_key() would produce for it, or None if `spec`
+    isn't recognized."""
+    spec = spec.strip().lower()
+    if spec in NAMED_KEYS:
+        return NAMED_KEYS[spec]
+    m = re.match(r"^ctrl-([a-z])$", spec)
+    if m:
+        return bytes([ord(m.group(1)) - ord("a") + 1])
+    return None
+
+
+def build_keymap(config=None):
+    """Resolve the active keymap: DEFAULT_KEYMAP, with any action
+    overridden by a dotfile `key_<action>=<spec>` line or a
+    HIST_SEARCH_KEY_<ACTION> env var (env wins; see KEY_BIND_ENV)."""
+    config = config or {}
+    keymap = dict(DEFAULT_KEYMAP)
+    for action, env_name in KEY_BIND_ENV.items():
+        spec = os.environ.get(env_name) or config.get(f"key_{action}")
+        if not spec:
+            continue
+        parsed = _parse_key_spec(spec)
+        if parsed:
+            keymap[action] = (parsed,)
+    return keymap
+
+
 def arrange_rows(prompt_line, body_lines, footer_line, layout):
     """Order the prompt/list/footer rows for the given layout.
 
@@ -255,10 +452,14 @@ def filter_commands(commands, query, regex_mode, best_match=False):
     keeps matches in the order they were found while scanning
     `commands`, which is already most-recent-first (see read_history),
     so recency wins over match quality.
+
+    Fuzzy mode supports fzf-style extended-search syntax (AND/OR terms,
+    anchors, exact substrings, negation - see extended_score) and
+    smart-case matching.
     """
     if not query:
         return list(enumerate(commands))
-    scorer = regex_score if regex_mode else fuzzy_score
+    scorer = regex_score if regex_mode else extended_score
     scored = []
     for idx, cmd in enumerate(commands):
         score = scorer(query, cmd)
@@ -282,20 +483,95 @@ def _term_size(fd):
     return 24, 80
 
 
+def _utf8_extra_bytes(lead_byte):
+    """Number of continuation bytes following a UTF-8 lead byte, or 0 if
+    `lead_byte` isn't a valid multi-byte lead byte (including plain
+    ASCII, which needs none)."""
+    if 0xC2 <= lead_byte <= 0xDF:
+        return 1
+    if 0xE0 <= lead_byte <= 0xEF:
+        return 2
+    if 0xF0 <= lead_byte <= 0xF4:
+        return 3
+    return 0
+
+
+def _query_cursor_row(fd):
+    """Ask the terminal where the cursor is now (DSR, "\x1b[6n") and
+    return its 1-based absolute screen row, or None if the terminal
+    doesn't answer within a short timeout (some terminals/multiplexers
+    don't support it). Used to map mouse clicks to picker rows."""
+    os.write(fd, b"\x1b[6n")
+    buf = b""
+    deadline = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if not ready:
+            continue
+        buf += os.read(fd, 32)
+        m = re.search(rb"\x1b\[(\d+);(\d+)R", buf)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _parse_mouse_event(seq):
+    """Parse an SGR mouse report ("\x1b[<Cb;Cx;CyM/m") into (button,
+    column, row, pressed), or None if `seq` isn't one."""
+    m = re.match(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])$", seq)
+    if not m:
+        return None
+    button, col, row, final = m.groups()
+    return int(button), int(col), int(row), final == b"M"
+
+
+def _click_to_match_index(relative_row, layout, list_height, top):
+    """Map a click's row (0-based, relative to the top of the picker's
+    reserved screen strip) to a match index, or None if it fell outside
+    the match list (e.g. on the prompt or footer line)."""
+    body_row = relative_row - 1  # row 0 is the footer ("above") or prompt ("below")
+    if not 0 <= body_row < list_height:
+        return None
+    if layout == "above":
+        # The body is drawn reversed, topmost row = bottom-most match.
+        return top + (list_height - 1 - body_row)
+    return top + body_row
+
+
+def _scrollbar_rows(list_height, total, top):
+    """Return the set of body row indices (0-based) that should show
+    the scrollbar thumb, mirroring fzf's thin right-edge scrollbar. The
+    thumb's size and position are proportional to the visible window
+    within the total match count; returns an empty set if every match
+    already fits without scrolling."""
+    if total <= list_height:
+        return frozenset()
+    thumb_size = max(1, min(list_height, round(list_height * list_height / total)))
+    max_top = total - list_height
+    track = list_height - thumb_size
+    thumb_start = round(top * track / max_top) if max_top > 0 else 0
+    return frozenset(range(thumb_start, thumb_start + thumb_size))
+
+
 def _read_key(fd):
-    """Read one logical keypress (handles arrow/page-key escape sequences).
+    """Read one logical keypress (handles arrow/page-key escape sequences
+    and multi-byte UTF-8 characters).
 
     Arrow keys normally arrive as CSI sequences ("\x1b[A"), but terminals
     left in "application cursor keys" mode (DECCKM, e.g. after another
     program didn't clean up) send SS3 sequences ("\x1bOA") instead. Both
     forms are normalized to the CSI form so callers only match one shape.
 
-    PageUp/PageDown are longer CSI sequences with parameter bytes before
-    the final byte (e.g. "\x1b[5~"), so the whole sequence is read up to
-    its terminator instead of assuming a fixed length.
+    PageUp/PageDown, and SGR mouse reports, are longer CSI sequences with
+    parameter bytes before the final byte (e.g. "\x1b[5~", "\x1b[<0;1;1M"),
+    so the whole sequence is read up to its terminator instead of
+    assuming a fixed length.
     """
     b = os.read(fd, 1)
     if b != b"\x1b":
+        extra = _utf8_extra_bytes(b[0]) if b else 0
+        for _ in range(extra):
+            b += os.read(fd, 1)
         return b
     # A lone Esc has nothing pending; an arrow/page key sends more bytes
     # immediately after, so a short poll tells them apart.
@@ -313,14 +589,17 @@ def _read_key(fd):
         b3 = os.read(fd, 1)
         seq += b3
         # CSI final bytes are 0x40-0x7E; parameter/intermediate bytes
-        # (digits, ';', etc.) fall below that and keep the sequence going.
+        # (digits, ';', '<', etc.) fall below that and keep the sequence
+        # going (this also covers the "<...M"/"<...m" tail of SGR mouse
+        # reports, whose final byte is 'M' or 'm').
         if b3 and 0x40 <= b3[0] <= 0x7E:
             break
     return seq
 
 
-def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
+def run_ui(tty_fd, commands, width, list_height, theme, initial_query="", keymap=None):
     """Draw and drive the inline picker; return the selected command or None."""
+    keymap = keymap or DEFAULT_KEYMAP
     total_rows = list_height + 2  # prompt line + matches + footer line
     query = initial_query
     cursor = len(query)  # edit position within query, for Left/Right
@@ -357,6 +636,24 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
     # the top-left of that freshly reserved strip.
     write("\n" * total_rows)
     write(f"\x1b[{total_rows}A\r")
+    # Enable SGR mouse reporting (clicks to select, wheel to scroll) now
+    # that the cursor is parked at the top of our reserved strip, then
+    # ask the terminal where that row actually is on screen so clicks
+    # can be mapped back to a match; None (no answer) just disables
+    # click-to-select while leaving wheel scrolling, which needs no
+    # absolute position, working.
+    write("\x1b[?1000h\x1b[?1006h")
+    base_row = _query_cursor_row(tty_fd)
+
+    # A resize mid-session only reflows line width; reflowing the
+    # reserved strip's height would require re-scrolling the terminal,
+    # which risks losing track of `base_row` and nearby content.
+    resized = {"flag": False}
+
+    def _on_winch(signum, frame):
+        resized["flag"] = True
+
+    old_winch_handler = signal.signal(signal.SIGWINCH, _on_winch)
 
     def render():
         matches = filter_commands(commands, query, regex_mode, best_match)
@@ -377,21 +674,26 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
         plain_prefix = f"[{mode} {sort}] > "
         prompt_line = f"{mode_label} > {query}"
 
+        thumb_rows = _scrollbar_rows(list_height, len(matches), top)
         body_lines = []
         for row in range(list_height):
             i = top + row
+            scrollbar_char = "\u2503" if row in thumb_rows else " "
             if i >= len(matches):
-                body_lines.append("")
+                body_lines.append("" if not thumb_rows else (" " * (width - 2) + scrollbar_char)[: width - 1])
                 continue
             _idx, cmd = matches[i]
             text = cmd.replace("\n", " ⏎ ")
             is_selected = i == selected
             indicator = theme["selected_indicator"] if is_selected else theme["unselected_indicator"]
-            line = (indicator + text)[: width - 1]
+            budget = width - 1 - (1 if thumb_rows else 0)
+            line = (indicator + text)[:budget]
             if is_selected:
                 sel_style = _sgr(theme["selected_style"])
                 if sel_style:
                     line = f"{sel_style}{line}{RESET}"
+            if thumb_rows:
+                line = line.ljust(budget) + scrollbar_char
             body_lines.append(line)
 
         position = selected + 1 if matches else 0
@@ -431,6 +733,8 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
 
     def clear_and_home():
         nonlocal cursor_row
+        write("\x1b[?1000l\x1b[?1006l")
+        signal.signal(signal.SIGWINCH, old_winch_handler)
         out = ["\r"]
         if cursor_row:
             out.append(f"\x1b[{cursor_row}A")
@@ -445,15 +749,31 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
 
     try:
         while True:
+            if resized["flag"]:
+                resized["flag"] = False
+                width = _term_size(tty_fd)[1]
             matches = render()
             key = _read_key(tty_fd)
-            if key in (b"\r", b"\n"):
+            if key in keymap["select"]:
                 clear_and_home()
                 return matches[selected][1] if matches else None
-            elif key in (b"\x1b", b"\x03"):  # Esc / Ctrl-C
+            elif key in keymap["cancel"]:
                 clear_and_home()
                 return None
-            elif key == b"\t":
+            elif key.startswith(b"\x1b[<"):
+                event = _parse_mouse_event(key)
+                if event is None:
+                    continue
+                button, _col, row, pressed = event
+                if button in (64, 96):  # wheel up
+                    move_selection(1)
+                elif button in (65, 97):  # wheel down
+                    move_selection(-1)
+                elif button == 0 and pressed and base_row is not None:
+                    index = _click_to_match_index(row - base_row, theme["layout"], list_height, top)
+                    if index is not None and index < len(matches):
+                        selected = index
+            elif key in keymap["cycle_mode"]:
                 # Cycle through the four mode/sort combinations:
                 # FUZZY RECENT -> FUZZY BEST -> REGEX RECENT -> REGEX BEST -> ...
                 if best_match:
@@ -461,48 +781,53 @@ def run_ui(tty_fd, commands, width, list_height, theme, initial_query=""):
                 best_match = not best_match
                 selected = 0
                 top = 0
-            elif key in (b"\x1b[A", b"\x10"):  # Up / Ctrl-P
+            elif key in keymap["up"]:
                 move_selection(1)
-            elif key in (b"\x1b[B", b"\x0e"):  # Down / Ctrl-N
+            elif key in keymap["down"]:
                 move_selection(-1)
-            elif key == b"\x1b[5~":  # Page Up
+            elif key in keymap["page_up"]:
                 move_selection(list_height)
-            elif key == b"\x1b[6~":  # Page Down
+            elif key in keymap["page_down"]:
                 move_selection(-list_height)
-            elif key in (b"\x1b[D", b"\x02"):  # Left / Ctrl-B
+            elif key in keymap["left"]:
                 cursor = max(0, cursor - 1)
-            elif key in (b"\x1b[C", b"\x06"):  # Right / Ctrl-F
+            elif key in keymap["right"]:
                 cursor = min(len(query), cursor + 1)
-            elif key in (b"\x1b[H", b"\x1b[1~", b"\x01"):  # Home / Ctrl-A
+            elif key in keymap["home"]:
                 cursor = 0
-            elif key in (b"\x1b[F", b"\x1b[4~", b"\x05"):  # End / Ctrl-E
+            elif key in keymap["end"]:
                 cursor = len(query)
-            elif key == b"\x1b[3~":  # Delete (forward)
+            elif key in keymap["delete"]:
                 if cursor < len(query):
                     query = query[:cursor] + query[cursor + 1 :]
                     selected = 0
                     top = 0
-            elif key == b"\x0b":  # Ctrl-K: kill to end of line
+            elif key in keymap["kill_to_end"]:
                 if cursor < len(query):
                     query = query[:cursor]
                     selected = 0
                     top = 0
-            elif key == b"\x15":  # Ctrl-U: kill to start of line
+            elif key in keymap["kill_to_start"]:
                 if cursor > 0:
                     query = query[cursor:]
                     cursor = 0
                     selected = 0
                     top = 0
-            elif key in (b"\x7f", b"\x08"):
+            elif key in keymap["backspace"]:
                 if cursor > 0:
                     query = query[: cursor - 1] + query[cursor:]
                     cursor -= 1
                     selected = 0
                     top = 0
             else:
+                char = None
                 if len(key) == 1 and 0x20 <= key[0] < 0x7F:
-                    query = query[:cursor] + key.decode() + query[cursor:]
-                    cursor += 1
+                    char = key.decode()
+                elif len(key) > 1 and key[0] >= 0xC2:  # multi-byte UTF-8
+                    char = key.decode("utf-8", errors="replace")
+                if char:
+                    query = query[:cursor] + char + query[cursor:]
+                    cursor += len(char)
                     selected = 0
                     top = 0
     except BaseException:
@@ -515,7 +840,9 @@ def main():
     if not commands:
         return 0
 
+    config = read_config_file(os.environ.get("HIST_SEARCH_CONFIG", DEFAULT_CONFIG_PATH))
     theme = build_theme()
+    keymap = build_keymap(config)
     initial_query = sys.argv[1] if len(sys.argv) > 1 else ""
 
     tty_fd = os.open("/dev/tty", os.O_RDWR)
@@ -524,7 +851,7 @@ def main():
         tty.setraw(tty_fd)
         rows, cols = _term_size(tty_fd)
         list_height = max(1, min(MAX_VISIBLE_ROWS, rows - 4))
-        result = run_ui(tty_fd, commands, cols, list_height, theme, initial_query)
+        result = run_ui(tty_fd, commands, cols, list_height, theme, initial_query, keymap)
     finally:
         termios.tcsetattr(tty_fd, termios.TCSADRAIN, old_attrs)
         os.close(tty_fd)

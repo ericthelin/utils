@@ -24,9 +24,14 @@ $ ▮                      <- you press Ctrl-R
   finds `docker compose up`. No exact substring needed.
 - **Or search by pattern.** Press Tab to switch to regular expressions
   (`^git (push|pull)`) when you need precision.
+- **Pin down a fuzzy search further.** fzf-style extended syntax
+  (`^prefix`, `suffix$`, `'exact`, `!negate`, `a|b`) narrows fuzzy matches
+  without leaving fuzzy mode.
 - **Pick the ranking that fits.** Press Tab again to switch from
   most-recent-first (the default) to best-match ranking, in either fuzzy or
   regex mode.
+- **Mouse-friendly.** Click a row to pick it, or scroll the wheel to move the
+  selection.
 - **No fzf, no plugins, no install step.** One Python file that uses only the
   standard library, plus a short shell snippet to bind the key.
 - **It stays out of your way.** The picker opens inline under your prompt
@@ -56,7 +61,7 @@ the command line as the initial query. Inside the picker:
 
 | Key | Action |
 | --- | --- |
-| Type | Insert a character into the query at the cursor. Fuzzy matching is case-insensitive. |
+| Type | Insert a character into the query at the cursor. Fuzzy matching is case-insensitive unless the query contains an uppercase letter (smart case). Unicode input is supported. |
 | `Tab` | Cycle through FUZZY RECENT -> FUZZY BEST -> REGEX RECENT -> REGEX BEST. Regex matching is case-sensitive. |
 | `Up` / `Ctrl-P` | Move up the list one match. |
 | `Down` / `Ctrl-N` | Move down the list one match. |
@@ -68,8 +73,31 @@ the command line as the initial query. Inside the picker:
 | `Backspace` / `Delete` | Remove the character before / at the cursor. |
 | `Ctrl-K` | Delete from the cursor to the end of the query. |
 | `Ctrl-U` | Delete from the cursor to the start of the query. |
+| Mouse wheel | Move the selection up or down. |
+| Mouse click | Select the clicked row (needs a terminal that answers cursor-position queries). |
 | `Enter` | Choose the highlighted command and put it on your command line. |
 | `Esc` / `Ctrl-C` | Cancel and leave the command line as it was. |
+
+All of these key bindings can be rebound; see "Customizing key bindings"
+below.
+
+### Extended fuzzy search syntax
+
+In fuzzy mode, a query is split on spaces into terms that must **all**
+match (AND). Each term also understands:
+
+| Syntax | Meaning |
+| --- | --- |
+| `term1\|term2` | OR: either term matches (no spaces around `\|`) |
+| `^term` | match starts with `term` |
+| `term$` | match ends with `term` |
+| `^term$` | match equals `term` exactly |
+| `'term` | match contains `term` as an exact substring (not fuzzy) |
+| `!term` | negate any of the above (or plain fuzzy term) |
+
+Example: `^docker !compose 'up` finds commands starting with `docker`,
+not containing `compose`, and containing the exact substring `up`.
+
 
 You can also run the picker directly: `hist_search [initial-query]` prints
 the chosen command to standard output, which is how the widget captures it.
@@ -94,6 +122,20 @@ export HIST_SEARCH_THEME=fzf
 export HIST_SEARCH_SELECTED_STYLE=1;35    # override just one field
 ```
 
+### Customizing key bindings
+
+Any action can be rebound to a single key via a `~/.hist_searchrc` line
+(`key_<action>=<spec>`) or a `HIST_SEARCH_KEY_<ACTION>` env var (env wins).
+Actions: `select`, `cancel`, `cycle_mode`, `up`, `down`, `page_up`,
+`page_down`, `left`, `right`, `home`, `end`, `delete`, `kill_to_end`,
+`kill_to_start`, `backspace`. A spec is a named key (`tab`, `enter`, `esc`,
+`up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`,
+`delete`, `backspace`) or `ctrl-<letter>`.
+
+```bash
+export HIST_SEARCH_KEY_CANCEL=ctrl-g      # cancel with Ctrl-G instead of Esc
+```
+
 ## How it behaves
 
 - **History file.** `$HISTFILE` if set, otherwise `~/.zsh_history`, otherwise
@@ -109,11 +151,14 @@ export HIST_SEARCH_SELECTED_STYLE=1;35    # override just one field
   earliest match, then recency; for regex matches, the earliest match start
   wins, then recency.
 - **Display.** Up to 10 matches (fewer on very short terminals), plus a status
-  line showing position/total. Multi-line commands show a `⏎` marker between
-  lines.
+  line showing position/total and a scrollbar thumb on the right edge when
+  there are more matches than fit on screen. Multi-line commands show a `⏎`
+  marker between lines.
 - **Appearance.** Controlled by a theme (`default` or `fzf`), resolved from a
   built-in theme, then `~/.hist_searchrc`, then env vars (see "Customizing
   appearance" above).
+- **Resizing.** The picker reflows to a new terminal width while it is open;
+  height and scroll position stay fixed.
 - **The terminal.** The picker draws on `/dev/tty`, so it works inside
   `$(...)` capture and does not disturb what is already on screen.
 
@@ -223,10 +268,13 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 ## Limitations
 
 - Read-only: it cannot delete or edit history entries.
-- Typing in the query is limited to printable ASCII characters.
 - No preview pane, multi-select or timestamps.
 - No support for history stored in fish or PowerShell formats.
 - Unix-like systems only.
+- Click-to-select needs a terminal that answers cursor-position queries;
+  wheel-scroll works everywhere mouse reporting is supported.
+- Resizing the terminal while the picker is open only reflows its width, not
+  its height or scroll position.
 
 ## Development
 

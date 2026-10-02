@@ -268,6 +268,131 @@ class ArrangeRowsTests(unittest.TestCase):
         self.assertEqual(prompt_row, 0)
 
 
+class ExtendedScoreTests(unittest.TestCase):
+    def test_plain_term_matches_like_fuzzy_score(self):
+        self.assertEqual(hist_search.extended_score("gts", "git status"), hist_search.fuzzy_score("gts", "git status"))
+
+    def test_space_separated_terms_are_ANDed(self):
+        self.assertIsNotNone(hist_search.extended_score("git status", "git status"))
+        self.assertIsNone(hist_search.extended_score("git nomatch", "git status"))
+
+    def test_caret_anchors_a_prefix(self):
+        self.assertIsNotNone(hist_search.extended_score("^git", "git status"))
+        self.assertIsNone(hist_search.extended_score("^git", "my git status"))
+
+    def test_dollar_anchors_a_suffix(self):
+        self.assertIsNotNone(hist_search.extended_score("status$", "git status"))
+        self.assertIsNone(hist_search.extended_score("status$", "git status -v"))
+
+    def test_caret_and_dollar_together_require_an_exact_match(self):
+        self.assertIsNotNone(hist_search.extended_score("^git status$", "git status"))
+        self.assertIsNone(hist_search.extended_score("^git status$", "git status -v"))
+
+    def test_quote_requires_an_exact_substring_not_fuzzy(self):
+        self.assertIsNotNone(hist_search.extended_score("'git", "digit"))
+        self.assertIsNone(hist_search.extended_score("'xyz", "git status"))
+
+    def test_bang_negates_an_exact_substring(self):
+        self.assertIsNone(hist_search.extended_score("!status", "git status"))
+        self.assertIsNotNone(hist_search.extended_score("!status", "git commit"))
+
+    def test_bang_can_negate_prefix_and_suffix(self):
+        self.assertIsNone(hist_search.extended_score("!^git", "git status"))
+        self.assertIsNotNone(hist_search.extended_score("!^git", "ls -la"))
+
+    def test_pipe_within_a_token_is_an_OR(self):
+        self.assertIsNotNone(hist_search.extended_score("foo|status", "git status"))
+        self.assertIsNone(hist_search.extended_score("foo|bar", "git status"))
+
+    def test_smart_case_is_insensitive_when_query_is_lowercase(self):
+        self.assertIsNotNone(hist_search.extended_score("git", "GIT STATUS"))
+
+    def test_smart_case_is_sensitive_when_query_has_uppercase(self):
+        self.assertIsNone(hist_search.extended_score("Git", "git status"))
+        self.assertIsNotNone(hist_search.extended_score("Git", "Git status"))
+
+    def test_empty_query_matches_everything(self):
+        self.assertEqual(hist_search.extended_score("", "anything"), 0)
+
+
+class ScrollbarRowsTests(unittest.TestCase):
+    def test_no_scrollbar_when_everything_fits(self):
+        self.assertEqual(hist_search._scrollbar_rows(5, 5, 0), frozenset())
+
+    def test_thumb_at_top_when_scrolled_to_the_start(self):
+        self.assertEqual(hist_search._scrollbar_rows(5, 20, 0), frozenset({0}))
+
+    def test_thumb_at_bottom_when_scrolled_to_the_end(self):
+        rows = hist_search._scrollbar_rows(5, 20, 15)
+        self.assertEqual(max(rows), 4)
+
+    def test_thumb_grows_as_the_visible_fraction_grows(self):
+        small_window = hist_search._scrollbar_rows(2, 100, 0)
+        large_window = hist_search._scrollbar_rows(50, 100, 0)
+        self.assertLessEqual(len(small_window), len(large_window))
+
+
+class ClickToMatchIndexTests(unittest.TestCase):
+    def test_below_layout_maps_body_rows_in_order(self):
+        self.assertIsNone(hist_search._click_to_match_index(0, "below", 5, 0))  # prompt row
+        self.assertEqual(hist_search._click_to_match_index(1, "below", 5, 0), 0)
+        self.assertEqual(hist_search._click_to_match_index(3, "below", 5, 2), 4)
+
+    def test_above_layout_reverses_body_rows(self):
+        self.assertEqual(hist_search._click_to_match_index(1, "above", 5, 0), 4)
+        self.assertEqual(hist_search._click_to_match_index(5, "above", 5, 0), 0)
+
+    def test_out_of_bounds_row_returns_none(self):
+        self.assertIsNone(hist_search._click_to_match_index(10, "below", 5, 0))
+
+
+class ParseMouseEventTests(unittest.TestCase):
+    def test_parses_a_wheel_down_report(self):
+        self.assertEqual(hist_search._parse_mouse_event(b"\x1b[<65;3;4M"), (65, 3, 4, True))
+
+    def test_parses_a_button_release(self):
+        self.assertEqual(hist_search._parse_mouse_event(b"\x1b[<0;3;4m"), (0, 3, 4, False))
+
+    def test_non_mouse_sequence_returns_none(self):
+        self.assertIsNone(hist_search._parse_mouse_event(b"\x1b[A"))
+
+
+class KeymapTests(unittest.TestCase):
+    def test_parse_key_spec_recognizes_named_keys(self):
+        self.assertEqual(hist_search._parse_key_spec("tab"), b"\t")
+        self.assertEqual(hist_search._parse_key_spec("ESC"), b"\x1b")
+
+    def test_parse_key_spec_recognizes_ctrl_letters(self):
+        self.assertEqual(hist_search._parse_key_spec("ctrl-a"), b"\x01")
+        self.assertEqual(hist_search._parse_key_spec("ctrl-y"), b"\x19")
+
+    def test_parse_key_spec_rejects_unknown_specs(self):
+        self.assertIsNone(hist_search._parse_key_spec("f13"))
+
+    def test_build_keymap_defaults_match_DEFAULT_KEYMAP(self):
+        self.assertEqual(hist_search.build_keymap(), hist_search.DEFAULT_KEYMAP)
+
+    def test_env_var_overrides_a_default_binding(self):
+        os.environ["HIST_SEARCH_KEY_CANCEL"] = "ctrl-y"
+        try:
+            keymap = hist_search.build_keymap()
+            self.assertEqual(keymap["cancel"], (b"\x19",))
+        finally:
+            del os.environ["HIST_SEARCH_KEY_CANCEL"]
+
+    def test_dotfile_config_overrides_a_default_binding(self):
+        keymap = hist_search.build_keymap({"key_select": "ctrl-y"})
+        self.assertEqual(keymap["select"], (b"\x19",))
+
+    def test_env_var_wins_over_dotfile_config(self):
+        os.environ["HIST_SEARCH_KEY_SELECT"] = "ctrl-g"
+        try:
+            keymap = hist_search.build_keymap({"key_select": "ctrl-y"})
+            self.assertEqual(keymap["select"], (b"\x07",))
+        finally:
+            del os.environ["HIST_SEARCH_KEY_SELECT"]
+
+
 class ReadKeyTests(unittest.TestCase):
     def _read(self, raw_bytes):
         r, w = os.pipe()
@@ -280,6 +405,13 @@ class ReadKeyTests(unittest.TestCase):
 
     def test_plain_character(self):
         self.assertEqual(self._read(b"a"), b"a")
+
+    def test_multi_byte_utf8_character(self):
+        self.assertEqual(self._read("é".encode()), "é".encode())
+
+    def test_four_byte_utf8_character(self):
+        emoji = "🎉".encode()
+        self.assertEqual(self._read(emoji), emoji)
 
     def test_up_arrow_csi(self):
         self.assertEqual(self._read(b"\x1b[A"), b"\x1b[A")
@@ -307,11 +439,14 @@ class ReadKeyTests(unittest.TestCase):
     def test_lone_escape_with_nothing_pending(self):
         self.assertEqual(self._read(b"\x1b"), b"\x1b")
 
+    def test_sgr_mouse_report_read_as_one_sequence(self):
+        self.assertEqual(self._read(b"\x1b[<65;3;4M"), b"\x1b[<65;3;4M")
+
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 
 
-def run_picker(history_lines, keys, wait_for=b"FUZZY"):
+def run_picker(history_lines, keys, wait_for=b"FUZZY", extra_env=None):
     """Drive the real picker in a pseudo-terminal; return its visible output."""
     with tempfile.NamedTemporaryFile("w", suffix=".hist", delete=False) as handle:
         handle.write("\n".join(history_lines) + "\n")
@@ -320,6 +455,8 @@ def run_picker(history_lines, keys, wait_for=b"FUZZY"):
         if pid == 0:
             os.environ["HISTFILE"] = handle.name
             os.environ["TERM"] = "xterm"
+            for key, value in (extra_env or {}).items():
+                os.environ[key] = value
             os.execv(sys.executable, [sys.executable, MODULE_PATH])
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         out = b""
@@ -368,6 +505,73 @@ class PickerEndToEndTests(unittest.TestCase):
     def test_escape_cancels_without_output(self):
         result = run_picker(HISTORY, [b"\x1b"])
         self.assertTrue(result.endswith("cancel"), result[-80:])
+
+    def test_mouse_wheel_down_moves_to_the_next_match(self):
+        # SGR mouse report for wheel-down (button 65), column/row are
+        # irrelevant for wheel events.
+        result = run_picker(HISTORY, [b"g", b"i", b"t", b"\x1b[<65;1;1M", b"\r"])
+        self.assertTrue(result.endswith("git status"), result[-80:])
+
+    def test_unicode_query_matches_unicode_history(self):
+        result = run_picker(
+            ["café con leche", "git status"],
+            [b"\xc3\xa9", b"\r"],  # "é" as UTF-8 bytes
+        )
+        self.assertTrue(result.endswith("café con leche"), result[-80:])
+
+    def test_scrollbar_thumb_appears_when_matches_overflow_the_list(self):
+        many = [f"echo item{i}" for i in range(30)]
+        result = run_picker(many, [b"i", b"t", b"e", b"m", b"1", b"\r"])
+        self.assertIn("\u2503", result)
+        self.assertTrue(result.endswith("echo item21"), result[-80:])
+
+    def test_rebound_cancel_key_via_env_var(self):
+        result = run_picker(HISTORY, [b"\x19"], extra_env={"HIST_SEARCH_KEY_CANCEL": "ctrl-y"})
+        self.assertTrue(result.endswith("cancel"), result[-80:])
+
+    def test_survives_a_terminal_resize(self):
+        # Resizing the pty mid-session makes the kernel send SIGWINCH to
+        # the picker; it should keep working afterwards instead of
+        # crashing or hanging.
+        with tempfile.NamedTemporaryFile("w", suffix=".hist", delete=False) as handle:
+            handle.write("\n".join(HISTORY) + "\n")
+        try:
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["HISTFILE"] = handle.name
+                os.environ["TERM"] = "xterm"
+                os.execv(sys.executable, [sys.executable, MODULE_PATH])
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+            out = b""
+            deadline = time.time() + 5
+            started = False
+            resized = False
+            keys = [b"g", b"i", b"t", b"\r"]
+            sent = 0
+            while time.time() < deadline:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    out += chunk
+                if not started and b"FUZZY" in out:
+                    started = True
+                if started and not resized:
+                    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+                    resized = True
+                elif started and sent < len(keys):
+                    os.write(fd, keys[sent])
+                    sent += 1
+                    time.sleep(0.15)
+            os.waitpid(pid, 0)
+            result = ANSI.sub(b"", out).decode(errors="replace").replace("\r", "").rstrip()
+            self.assertTrue(result.endswith("git status") or result.endswith("git commit -m fix"), result[-80:])
+        finally:
+            os.unlink(handle.name)
 
     def test_empty_history_prints_nothing_and_exits(self):
         with tempfile.NamedTemporaryFile("w", suffix=".hist", delete=False) as handle:
