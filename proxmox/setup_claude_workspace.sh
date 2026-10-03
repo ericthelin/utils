@@ -49,20 +49,20 @@ sleep 5
 echo -e "${GREEN}Provisioning software stack inside container...${NC}"
 pct exec $CT_ID -- bash -c "
     apt-get update && apt-get install -y curl wget git unzip nano build-essential python3 python3-pip python3-venv nodejs npm
-    
+
     # Ensure Node.js LTS (v18+)
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
     apt-get install -y nodejs
-    
+
     # Install Claude Code globally
     npm install -g @anthropic-ai/claude-code || curl -sSL https://claude.ai | bash -s -- -y
-    
+
     # Create unified directory infrastructure
     mkdir -p /opt/workspace/google-antigravity
     mkdir -p /opt/workspace/codex
     mkdir -p /opt/workspace/opencode
     mkdir -p ~/.config/Claude
-    
+
     # Setup mock/placeholder configurations or clones for custom workspace tooling
     echo 'Initializing Google Antigravity, Codex, and Opencode configurations...'
     echo '{"environment": "proxmox-container", "components": ["google-antigravity", "codex", "opencode"]}' > /opt/workspace/workspace_manifest.json

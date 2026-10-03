@@ -7,7 +7,8 @@ platform-specific files (`CLAUDE.md`, `GEMINI.md`,
 `.github/copilot-instructions.md`) are symlinks to this file so every tool
 reads the same guidance.
 
-`utils` is a git submodule of the private `tools` repository (at `tools/utils`).
+`utils` is also included as a Git subtree in the private `tools` repository
+(at `tools/utils`). Ordinary clones and pulls of `tools` include these files.
 The parent repository's `AGENTS.md` points here, so these rules apply whether
 your working directory is `tools/` or `tools/utils/`. Rules in the parent
 `AGENTS.md` (commit style, no AI attribution, testing policy) also apply.
@@ -132,8 +133,8 @@ tool whose README disagrees with its `--help` is broken.
    `tests/run_tests.sh`.
 4. Write `<tool>/README.md` per the requirements above.
 5. Add the tool to the root `README.md` table.
-6. Commit in this repository, then update the submodule pointer in the parent
-   `tools` repository (see below).
+6. Commit in the repository you are working in, then sync the public repository
+   and the `tools` subtree as described below.
 
 ## Development Practices
 
@@ -153,9 +154,13 @@ tool whose README disagrees with its `--help` is broken.
 - Never mention Claude, Anthropic or any AI tool in commit messages.
 - Commits must leave the tests passing and the docs accurate.
 - Fix the last commit with `git commit --amend`.
-- This repository is a submodule. After committing here, the parent repository
-  shows `utils` as modified; commit that pointer update in the parent (and
-  push this repository first, so the pointer refers to a published commit).
+- In a standalone `utils` checkout, commit and push normally. In `tools/utils`,
+  commit from the `tools` repository root. From that root, import public changes
+  with `git subtree pull --prefix=utils git@github.com:ericthelin/utils.git main --squash`
+  and publish committed subtree changes with
+  `git subtree push --prefix=utils git@github.com:ericthelin/utils.git main`.
+  Never push the private `tools` branch to the public repository; subtree push
+  exports only the history and files under `utils/`.
 
 ## Testing
 
