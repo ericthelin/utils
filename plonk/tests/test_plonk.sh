@@ -55,6 +55,10 @@ prompt_out="$(printf '\n' | "$BIN/plonk" dl/Widget_bar-2.0-x86_64.AppImage 2>&1)
    && ! -e "$HOME/Applications/Widget_bar.AppImage" ]] \
   && check "an existing symlink for the same app is offered and repointed" ok || check "an existing symlink for the same app is offered and repointed: $prompt_out" no
 
+resume_out="$(cd dl && "$BIN/plonk" --no-prompt Widget_bar-2.0-x86_64.AppImage 2>&1)"
+[[ $? -eq 0 && "$resume_out" == *"from an earlier install"* ]] \
+  && check "a file already moved into ~/Applications is found there" ok || check "a file already moved into ~/Applications is found there: $resume_out" no
+
 # .deb and .flatpak are only planned in a dry run.
 touch dl/tool.deb dl/thing.flatpak
 "$BIN/plonk" -n dl/tool.deb 2>&1 | grep -q "sudo apt install" \

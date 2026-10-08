@@ -226,8 +226,12 @@ def main():
 
     file_path = Path(args.file).expanduser().resolve()
     if not file_path.exists():
-        print(f"File not found: {file_path}", file=sys.stderr)
-        sys.exit(1)
+        installed = Path.home() / 'Applications' / file_path.name
+        if not installed.is_file():
+            print(f"File not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"{file_path} not found; using {installed} from an earlier install")
+        file_path = installed
 
     if file_path.is_dir():
         if not install_extracted(file_path, args.verbose):
@@ -239,8 +243,9 @@ def main():
         app_dir = Path.home() / 'Applications'
         app_dir.mkdir(parents=True, exist_ok=True)
         dest = app_dir / file_path.name
-        # Copy or move AppImage
-        if args.copy:
+        if file_path == dest:
+            pass
+        elif args.copy:
             if args.verbose or args.dryrun:
                 print(f"Copying {file_path} to {dest}")
             if not args.dryrun:
