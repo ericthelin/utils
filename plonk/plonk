@@ -259,7 +259,7 @@ def main():
         import re
         def canonical_appimage_name(name):
             platforms = [
-                'ubuntu', 'debian', 'fedora', 'arch', 'centos', 'opensuse',
+                'ubuntu', 'ubu', 'debian', 'fedora', 'arch', 'centos', 'opensuse',
                 'linuxmint', 'elementary', 'popos', 'manjaro', 'kali', 'raspbian',
                 'alpine', 'void', 'gentoo', 'endeavouros', 'zorin', 'mint',
                 'parrot', 'mx', 'redhat', 'rhel', 'oracle', 'rocky', 'alma',
@@ -286,15 +286,27 @@ def main():
                 n += '.AppImage'
             return n
 
+        def name_stem(name):
+            return re.split(r'[-_. \d]', name, maxsplit=1)[0].lower()
+
+        def find_previous_symlink(new_name):
+            stem = name_stem(new_name)
+            if not stem:
+                return None
+            for f in sorted(app_dir.iterdir()):
+                if (f.is_symlink() and f.name.lower().endswith('.appimage')
+                        and name_stem(Path(os.readlink(f)).name) == stem):
+                    return f
+            return None
+
         base = canonical_appimage_name(file_path.name)
         symlink = app_dir / base
-
         symlink_exists = symlink.exists() or symlink.is_symlink()
-        if symlink_exists:
-            if args.verbose or args.dryrun:
-                print(f"Removing old symlink {symlink}")
-            if not args.dryrun:
-                symlink.unlink()
+        guessed = False
+        if not symlink_exists:
+            previous = find_previous_symlink(file_path.name)
+            if previous:
+                base, symlink, guessed = previous.name, previous, True
 
         for f in app_dir.iterdir():
             if f.is_symlink() and f.name.lower() == base.lower() and f != symlink:
@@ -303,7 +315,7 @@ def main():
                 if not args.dryrun:
                     f.unlink()
 
-        if not symlink_exists and not args.no_prompt:
+        if (guessed or not symlink_exists) and not args.no_prompt:
             try:
                 user_input = input(f"Symlink name [{base}]: ").strip()
                 if user_input:
@@ -312,6 +324,16 @@ def main():
             except (EOFError, KeyboardInterrupt):
                 print("\nSymlink creation cancelled.", file=sys.stderr)
                 return
+
+        if symlink.is_symlink():
+            if args.verbose or args.dryrun:
+                print(f"Replacing existing symlink {symlink}")
+            if not args.dryrun:
+                symlink.unlink()
+        elif symlink.exists():
+            print(f"Error: {symlink} exists and is not a symlink; not replacing it.", file=sys.stderr)
+            print(f"Installed {dest} without a symlink.", file=sys.stderr)
+            return
 
         if args.verbose or args.dryrun:
             print(f"Symlinking {dest} to {symlink}")

@@ -75,7 +75,7 @@ plonk [options] <file>
 
 | The file is... | What happens |
 | --- | --- |
-| `*.AppImage` | Moved (or copied with `--copy`) to `~/Applications`, made executable. A symlink with the version, platform and architecture stripped from the name is created there (you are asked to confirm the name for a new one). An icon is extracted from the AppImage when possible, and a launcher is written to `~/.local/share/applications/<Name>.desktop`. |
+| `*.AppImage` | Moved (or copied with `--copy`) to `~/Applications`, made executable. A symlink with the version, platform and architecture stripped from the name is created there (you are asked to confirm the name for a new one). If no symlink has that name but one already points at an older AppImage of the same app (same leading name, such as `BambuStudio`), that symlink's name is offered as the default and the link is repointed. If the chosen name is already a symlink it is replaced; if it is a regular file it is left alone and no symlink is made. An icon is extracted from the AppImage when possible, and a launcher is written to `~/.local/share/applications/<Name>.desktop`. |
 | An executable outside `~/Downloads` | Offers to create a launcher for it (it does not move or run it). |
 | `*.deb` | `sudo apt install <file>`; if that fails, `sudo apt --fix-broken install` and one retry. The `.deb` is deleted afterwards unless `--copy`. |
 | `*.flatpak` | `flatpak install --user <file>`. |
