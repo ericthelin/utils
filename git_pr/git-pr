@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # git-pr: Open the GitHub "new pull request" page for the current branch.
-# Detects if the repo has a 'develop' branch and uses it as base, otherwise
-# falls back to the repository's default branch.
+# The base branch is, in order: the BRANCH argument, the remembered
+# pr.target-branch, the closest parent among the target repo's integration
+# branches (develop, main, master, rc/*, release/*, hotfix/*), a 'develop'
+# branch, then the repository's default branch.
 #
 # Chrome profile is resolved by email address. The email is read from git config
 # 'pr.chrome-email' (repo-local first, then global). If not configured, the script
@@ -11,6 +13,7 @@
 #
 # Usage:
 #   git pr                                        Open PR page in browser
+#   git pr rc/v9.15.0                             Open PR page against that base branch
 #   git pr --set-profile "user@example.com"        Remember Chrome email for this repo
 #   git pr --set-branch "branch_name"             Remember target branch for this repo (e.g. dev)
 #   git pr --set-repo "owner/repo" or URL         Remember target repo/upstream for this repo
@@ -130,6 +133,41 @@ extract_repo_name() {
     echo "$repo_path" | cut -d'/' -f2-
 }
 
+# Rank of an integration branch name (lower wins ties); fails for other names
+integration_branch_rank() {
+    case "$1" in
+        develop)    echo 0 ;;
+        main)       echo 1 ;;
+        master)     echo 2 ;;
+        release/*)  echo 3 ;;
+        rc/*)       echo 4 ;;
+        hotfix/*)   echo 5 ;;
+        *)          return 1 ;;
+    esac
+}
+
+# Print the integration branch on the target repo that HEAD is closest to
+# (fewest commits on HEAD that the branch lacks); ties go to the lowest rank.
+detect_parent_branch() {
+    local target_spec="$1" current="$2"
+    local best="" best_count="" best_rank="" sha ref name rank count
+
+    while read -r sha ref; do
+        name=${ref#refs/heads/}
+        [[ "$name" == "$current" ]] && continue
+        rank=$(integration_branch_rank "$name") || continue
+        git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+        git merge-base "$sha" HEAD &>/dev/null || continue
+        count=$(git rev-list --count "$sha..HEAD")
+        if [[ -z "$best" || "$count" -lt "$best_count" \
+            || ( "$count" -eq "$best_count" && "$rank" -lt "$best_rank" ) ]]; then
+            best="$name" best_count="$count" best_rank="$rank"
+        fi
+    done < <(git ls-remote --heads "$target_spec" 2>/dev/null)
+
+    [[ -n "$best" ]] && echo "$best"
+}
+
 if [[ "${1:-}" == "--set-profile" ]]; then
     email="${2:?Usage: git pr --set-profile \"user@example.com\"}"
     git config pr.chrome-email "$email"
@@ -149,6 +187,15 @@ if [[ "${1:-}" == "--set-repo" ]]; then
     git config pr.target-repo "$repo_name"
     echo "Target repo for this repo set to: $repo_name"
     exit 0
+fi
+
+explicit_base=""
+if [[ $# -gt 0 ]]; then
+    if [[ "$1" == -* || $# -gt 1 ]]; then
+        echo "Usage: git pr [BRANCH]" >&2
+        exit 2
+    fi
+    explicit_base="$1"
 fi
 
 branch=$(git rev-parse --abbrev-ref HEAD)
@@ -242,7 +289,10 @@ for r in $(git remote); do
 done
 
 # Determine the target base branch
-base=$(git config --get pr.target-branch 2>/dev/null || true)
+base="$explicit_base"
+if [[ -z "$base" ]]; then
+    base=$(git config --get pr.target-branch 2>/dev/null || true)
+fi
 if [[ -z "$base" ]]; then
     # Determine the target specifier for git ls-remote (remote name or HTTPS URL)
     if [[ -n "$target_remote" ]]; then
@@ -251,8 +301,10 @@ if [[ -z "$base" ]]; then
         target_spec="https://github.com/${target_repo_path}"
     fi
 
-    # Check if 'develop' branch exists, otherwise use the remote's HEAD branch
-    if git ls-remote --heads "$target_spec" develop 2>/dev/null | grep -q develop; then
+    base=$(detect_parent_branch "$target_spec" "$branch" || true)
+    if [[ -n "$base" ]]; then
+        echo "Detected parent branch: $base"
+    elif git ls-remote --heads "$target_spec" develop 2>/dev/null | grep -q develop; then
         base="develop"
     else
         base=$(git ls-remote --symref "$target_spec" HEAD 2>/dev/null | awk '/^ref:/ {print $2}' | sed 's|refs/heads/||')

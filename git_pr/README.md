@@ -26,9 +26,9 @@ still press the green button.
 
 - **One step from finished branch to PR form.** No copying URLs, no hunting for
   the "Compare & pull request" banner.
-- **Picks the right base branch.** It uses `develop` when the target repository
-  has one, otherwise the repository's default branch, or a branch you choose
-  and it remembers.
+- **Picks the right base branch.** It finds the integration branch your work
+  branched from (`develop`, `main`, `master`, `release/*`, `rc/*`, `hotfix/*`),
+  or uses the branch you name (`git pr rc/v9.15.0`) or one it remembers.
 - **Works with forks.** If you push to your fork and the pull request belongs on
   the upstream project, it builds the cross-repository compare link for you.
 - **Opens the right account.** With work and personal GitHub accounts in
@@ -48,6 +48,7 @@ script as a subcommand:
 git checkout -b my-feature
 # ... commit your work ...
 git pr                                          # push and open the PR page
+git pr rc/v9.15.0                               # ...against a specific base branch
 
 git pr --set-profile "me@work.com"              # remember which Chrome account to use
 git pr --set-branch develop                     # remember the base branch
@@ -57,7 +58,7 @@ git pr --set-repo upstream-org/project          # PRs go to the upstream project
 ## Usage
 
 ```text
-git pr
+git pr [BRANCH]
 git pr --set-profile EMAIL
 git pr --set-branch BRANCH
 git pr --set-repo OWNER/REPO | URL | REMOTE-NAME
@@ -66,6 +67,7 @@ git pr --set-repo OWNER/REPO | URL | REMOTE-NAME
 | Command | Meaning |
 | --- | --- |
 | `git pr` | Push the current branch (if needed), then open the compare page. |
+| `git pr BRANCH` | Same, but open the pull request against `BRANCH` (for example `rc/v9.15.0`), ignoring auto-detection and `pr.target-branch`. |
 | `--set-profile EMAIL` | Remember the Chrome account email for this repository (`pr.chrome-email`). |
 | `--set-branch BRANCH` | Remember the base branch for this repository (`pr.target-branch`). |
 | `--set-repo TARGET` | Remember the repository pull requests should target (`pr.target-repo`): `owner/repo`, a URL, or the name of a git remote. |
@@ -81,8 +83,16 @@ these commands or with `git config` directly.
    has exactly your commit.
 3. **Target repository** (where the PR goes): `pr.target-repo` if set, else the
    `upstream` remote if you have one, else the repository you pushed to.
-4. **Base branch:** `pr.target-branch` if set, else `develop` if the target
-   repository has that branch, else the target's default branch, else `main`.
+4. **Base branch**, first match wins:
+   1. the `BRANCH` argument;
+   2. `pr.target-branch` if set;
+   3. the detected parent: of the target repository's `develop`, `main`,
+      `master`, `release/*`, `rc/*` and `hotfix/*` branches, the one your branch
+      is closest to (fewest commits of yours that it lacks). Ties go in that
+      order. Only branches whose commits you have locally are considered, so
+      `git fetch` first if a new `rc/*` branch is not being picked up;
+   4. `develop` if the target repository has it, else the target's default
+      branch, else `main`.
 5. **URL.** For the same repository:
    `https://github.com/OWNER/REPO/compare/BASE...BRANCH`. For a fork:
    `https://github.com/OWNER/REPO/compare/BASE...FORKOWNER:FORKREPO:BRANCH`.
@@ -172,7 +182,10 @@ Or define an alias instead: `git config --global alias.pr '!/path/to/utils/bin/g
 
 - **`Push failed - aborting`**: fix the push (authentication, protected branch,
   no remote) and run it again.
-- **It opens the wrong base branch**: run `git pr --set-branch NAME` once.
+- **It opens the wrong base branch**: pass it once (`git pr NAME`) or remember
+  it with `git pr --set-branch NAME`.
+- **A new `rc/*` or `release/*` branch is not detected**: run `git fetch` so its
+  commits exist locally, or pass the branch name.
 - **The PR should go to the upstream project, not my fork**: run
   `git pr --set-repo OWNER/REPO` (or add a remote named `upstream`).
 - **`no Chrome profile found for ...`**: the email is not a signed-in account in
