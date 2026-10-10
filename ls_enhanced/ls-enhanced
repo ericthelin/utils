@@ -319,8 +319,8 @@ fi
 
 # Add color scale for eza/exa if appropriate
 if [ "$use_color_scale" = "yes" ] && [[ " ${final_args[@]} " =~ " --color=auto " ]]; then
-  # Replace --color=auto with --color-scale for eza/exa
-  final_args=("${final_args[@]/--color=auto/--color-scale}")
+  # Replace --color=auto with a size-only colour scale for eza/exa
+  final_args=("${final_args[@]/--color=auto/--color-scale=size}")
 fi
 
 vlog 3 "Final resolved args: ${final_args[*]}"
@@ -343,7 +343,7 @@ if [ "$primary_cmd" != "ls" ]; then
     declare -a stripped_args
     for arg in "${final_args[@]}"; do
       case "$arg" in
-        -snew|-ssize|-sext|--git|--icons|--color-scale|--header|-T|--tree|--git-ignore|--level=*) stripped_args+=("$arg") ;;
+        -snew|-ssize|-sext|--git|--icons|--color-scale|--color-scale=*|--header|-T|--tree|--git-ignore|--level=*) stripped_args+=("$arg") ;;
         *) ls_args+=("$arg") ;;
       esac
     done

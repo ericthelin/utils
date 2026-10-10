@@ -65,8 +65,8 @@ options such as `-la` or `-h`) is passed to the underlying tool unchanged.
 
 | Flag | View | With `eza` / `exa` | With plain `ls` |
 | --- | --- | --- | --- |
-| *(none)* | Default | icons, sorted newest last, colour scale, git status | `-F` (mark types) with colour |
-| `-d` | Everything, newest last | long, all files, group, modified, icons, colour scale | `-lart` with colour |
+| *(none)* | Default | icons, sorted newest last, size colour scale, git status | `-F` (mark types) with colour |
+| `-d` | Everything, newest last | long, all files, group, modified, icons, size colour scale | `-lart` with colour |
 | `-l` | Long list, hidden files, directories first | `-l --all --group-directories-first --icons` + git | `-l --all` (+ directories first) |
 | `-ll` | As `-l`, also showing `.` and `..` | `-l --all --all ...` + git | `-l -a -a` (+ directories first) |
 | `-lt` | Two-level tree | `-T --level=2` with icons, git-ignore aware | `-l -t` (long, newest first) |
@@ -97,7 +97,10 @@ options such as `-la` or `-h`) is passed to the underlying tool unchanged.
   `ls` does not understand (icons, sort keys, tree and git flags) and runs `ls`
   instead. `eza`'s own error output is hidden, so run with `-v` to see the
   command it tried.
-- **Colour:** `--color=auto` is switched to `--color-scale` for `eza` and `exa`.
+- **Colour:** `--color=auto` is switched to `--color-scale=size` for `eza` and
+  `exa`, so file sizes are shaded by magnitude. The age scale is left off
+  because some `eza` builds abort (`No such local time`) on files whose
+  timestamps are corrupt or fall in a daylight-saving gap.
   With plain `ls`, `--color=auto` is used, or `-G` on systems whose `ls` has that
   instead.
 - **Only exact matches** of the flags above are treated as views. `-la`, `-h`,
@@ -178,6 +181,11 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 - **Icons show as boxes**: install a Nerd Font and select it in your terminal.
 - **`Command failed ... falling back to ls`**: `eza` rejected a flag. Run with
   `-v` and try the printed command by hand.
+- **`eza` panics with `No such local time`**: a file has a timestamp that does
+  not exist in your time zone (often a corrupt birth time, see `stat`). That
+  `eza` build cannot colour or format it; `ls-enhanced` avoids the age colour
+  scale for this reason. Passing `--color-scale=age` or `--time=created` by hand
+  can still trigger it.
 - **Git columns are missing**: your `eza`/`exa` was built without git support, or
   you are not in a repository.
 - **`LS_ENHANCED_TOOL=eza was requested, but eza was not found`**: install `eza`

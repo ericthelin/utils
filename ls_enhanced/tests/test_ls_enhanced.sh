@@ -64,8 +64,8 @@ out="$(run_eza -v -l "$work/dir")"
   && check "eza: -l adds icons, git status and directories first" ok || check "eza: -l adds icons, git status and directories first" no
 
 out="$(run_eza -v -t "$work/dir")"
-[[ "$out" == *"-snew"* && "$out" == *"--color-scale"* && "$out" != *"--color=auto"* ]] \
-  && check "eza: --color=auto is replaced by --color-scale" ok || check "eza: --color=auto is replaced by --color-scale" no
+[[ "$out" == *"-snew"* && "$out" == *"--color-scale=size"* && "$out" != *"--color=auto"* ]] \
+  && check "eza: --color=auto is replaced by --color-scale=size" ok || check "eza: --color=auto is replaced by --color-scale=size" no
 
 out="$(run_eza -v -lT "$work/dir")"
 [[ "$out" == *"--level=4"* ]] \
