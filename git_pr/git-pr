@@ -148,6 +148,7 @@ integration_branch_rank() {
 
 # Print the integration branch on the target repo that HEAD is closest to
 # (fewest commits on HEAD that the branch lacks); ties go to the lowest rank.
+# Branches that already contain HEAD are descendants, not parents, and are skipped.
 detect_parent_branch() {
     local target_spec="$1" current="$2"
     local best="" best_count="" best_rank="" sha ref name rank count
@@ -156,9 +157,12 @@ detect_parent_branch() {
         name=${ref#refs/heads/}
         [[ "$name" == "$current" ]] && continue
         rank=$(integration_branch_rank "$name") || continue
+        git cat-file -e "${sha}^{commit}" 2>/dev/null \
+            || git fetch --quiet --no-tags "$target_spec" "$sha" 2>/dev/null || continue
         git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
         git merge-base "$sha" HEAD &>/dev/null || continue
         count=$(git rev-list --count "$sha..HEAD")
+        [[ "$count" -eq 0 ]] && continue
         if [[ -z "$best" || "$count" -lt "$best_count" \
             || ( "$count" -eq "$best_count" && "$rank" -lt "$best_rank" ) ]]; then
             best="$name" best_count="$count" best_rank="$rank"

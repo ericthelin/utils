@@ -65,9 +65,26 @@ echo three >> file && git commit -q -am three
   && check "the closest integration branch (release/*) is auto-detected as the base" ok || check "the closest integration branch (release/*) is auto-detected as the base: $(last_url)" no
 
 : > "$OPENER_LOG"
+git push -q origin feature-y:hotfix/ahead
+: > "$OPENER_LOG"
+"$BIN/git-pr" >/dev/null 2>&1
+[[ "$(last_url)" == */compare/release/9.1...feature-y ]] \
+  && check "a branch that already contains the commits is not chosen as the parent" ok || check "a branch that already contains the commits is not chosen as the parent: $(last_url)" no
+
+: > "$OPENER_LOG"
 "$BIN/git-pr" rc/v9.15.0 >/dev/null 2>&1
 [[ "$(last_url)" == */compare/rc/v9.15.0...feature-y ]] \
   && check "a branch argument overrides auto-detection" ok || check "a branch argument overrides auto-detection: $(last_url)" no
+
+git clone -q "$work/acme/widgets.git" "$work/other" && cd "$work/other" \
+  && git checkout -q -b feature-z origin/release/9.1 && echo z >> file && git commit -q -am z \
+  && git push -q origin feature-z && git checkout -q -b newer origin/develop && echo d >> file \
+  && git commit -q -am d && git push -q origin newer:develop && cd "$work/repo"
+git checkout -q feature-y
+: > "$OPENER_LOG"
+"$BIN/git-pr" >/dev/null 2>&1
+[[ "$(last_url)" == */compare/release/9.1...feature-y ]] \
+  && check "remote branch tips missing locally are fetched before comparing" ok || check "remote branch tips missing locally are fetched before comparing: $(last_url)" no
 
 "$BIN/git-pr" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && check "an unknown option is rejected" ok || check "an unknown option is rejected" no

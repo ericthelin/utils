@@ -89,8 +89,9 @@ these commands or with `git config` directly.
    3. the detected parent: of the target repository's `develop`, `main`,
       `master`, `release/*`, `rc/*` and `hotfix/*` branches, the one your branch
       is closest to (fewest commits of yours that it lacks). Ties go in that
-      order. Only branches whose commits you have locally are considered, so
-      `git fetch` first if a new `rc/*` branch is not being picked up;
+      order. Branches that already contain all your commits are
+      skipped. Branch tips you do not have locally are fetched first, so no
+      manual `git fetch` is needed;
    4. `develop` if the target repository has it, else the target's default
       branch, else `main`.
 5. **URL.** For the same repository:
@@ -184,8 +185,8 @@ Or define an alias instead: `git config --global alias.pr '!/path/to/utils/bin/g
   no remote) and run it again.
 - **It opens the wrong base branch**: pass it once (`git pr NAME`) or remember
   it with `git pr --set-branch NAME`.
-- **A new `rc/*` or `release/*` branch is not detected**: run `git fetch` so its
-  commits exist locally, or pass the branch name.
+- **A new `rc/*` or `release/*` branch is not detected**: its tip could not be
+  fetched from the target repository; pass the branch name.
 - **The PR should go to the upstream project, not my fork**: run
   `git pr --set-repo OWNER/REPO` (or add a remote named `upstream`).
 - **`no Chrome profile found for ...`**: the email is not a signed-in account in
