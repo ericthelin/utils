@@ -1,6 +1,6 @@
 # plonk
 
-**Install a downloaded Linux app with one command: AppImage, `.deb`, Flatpak, source tarball or installer script.**
+**Install a downloaded app with one command: AppImage, `.deb`, Flatpak, macOS `.dmg`, source tarball or installer script.**
 
 You download something, and the next ten minutes go on figuring out how to
 install it: move it somewhere, make it executable, add a menu entry, find an
@@ -25,8 +25,8 @@ it on files you downloaded from a source you trust.
 
 ## Why use it
 
-- **One command for five kinds of download.** AppImages, Debian packages,
-  Flatpak bundles, source archives and self-running installers are all handled
+- **One command for six kinds of download.** AppImages, Debian packages,
+  Flatpak bundles, macOS disk images, source archives and self-running installers are all handled
   by the same `plonk <file>`.
 - **AppImages done properly.** The file is moved into `~/Applications`, made
   executable, given a clean version-free name (`Obsidian-1.5.3-x86_64.AppImage`
@@ -51,6 +51,7 @@ it on files you downloaded from a source you trust.
 plonk ~/Downloads/SomeApp-2.0-x86_64.AppImage   # install + launcher
 plonk ~/Downloads/tool_1.2_amd64.deb            # apt install
 plonk ~/Downloads/thing.flatpak                 # flatpak install --user
+plonk ~/Downloads/SomeApp.dmg                   # macOS: copy the app to ~/Applications
 plonk ~/Downloads/project-1.0.tar.gz            # unpack, build, install
 plonk --dryrun -v ~/Downloads/SomeApp.AppImage  # just show what would happen
 ```
@@ -79,6 +80,7 @@ plonk [options] <file>
 | An executable outside `~/Downloads` | Offers to create a launcher for it (it does not move or run it). |
 | `*.deb` | `sudo apt install <file>`; if that fails, `sudo apt --fix-broken install` and one retry. The `.deb` is deleted afterwards unless `--copy`. |
 | `*.flatpak` | `flatpak install --user <file>`. |
+| `*.dmg` (macOS) | Mounted read-only with `hdiutil`. Every `.app` in the image is copied with `ditto` into `~/Applications` (replacing an older copy). If the image has no `.app` but a `.pkg`, `sudo installer -pkg` runs it. The image is always detached afterwards, and the `.dmg` is deleted after a successful install unless `--copy`. With `--dryrun` only the `hdiutil` command is shown. |
 | An archive (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.rar`, `.7z`, ...) | Extracted with `tgz` into `./<name>_extract`. The archive is deleted only after the build or install succeeded, and never with `--copy`; if nothing could be installed it is kept (you are asked whether to delete it, default no, unless `--no-prompt`). If a `Makefile`, `CMakeLists.txt` or `configure` script is found, `mmmake` is run in that folder. If only `build.sh` is found, `mmmake` runs but does not recognise it. If nothing buildable is found, `plonk` looks for a ready-to-run application (a folder such as Android Studio or an IDE, with an executable in `bin/` or at the top level): the folder is moved to `~/Applications/<archive-name>`, a stable symlink `~/Applications/<folder-name>` points at it (repointed on upgrade), and a launcher is written using the executable whose name best matches the folder and the first icon found. If no launcher can be identified you are told where the files are. |
 | A folder (for example a leftover `<name>_extract`) | Treated like an unpacked prebuilt application: moved into `~/Applications`, symlinked and given a launcher. Use this to finish an install that stopped after extraction. |
 | `*.run`, or a script | Made executable and **run**. |
@@ -92,7 +94,7 @@ Even in `--dryrun` mode, `plonk` may create the `~/Applications` folder.
 ## Installation
 
 `plonk` is a single Python 3 script (uses only the standard library; written for
-Python 3.8 or newer, tested on 3.12). It is for **Linux desktops**. What else
+Python 3.8 or newer, tested on 3.12). It is for **Linux desktops**, plus `.dmg` files on macOS. What else
 you need depends on what you install:
 
 | Needed for | Requires |
@@ -100,6 +102,7 @@ you need depends on what you install:
 | AppImages | FUSE 2 (`libfuse2`) so that AppImages can run, and a desktop that reads `~/.local/share/applications` |
 | `.deb` files | A Debian-family system with `apt` and `sudo` |
 | `.flatpak` files | `flatpak` |
+| `.dmg` files | macOS with `hdiutil` and `ditto` (both built in) |
 | Source archives | [`tgz`](../tgz/README.md) and [`mmmake`](../mmmake/README.md) from this repository, plus a compiler and `make` |
 | Script detection | the `file` command |
 
@@ -145,9 +148,12 @@ sudo zypper install python3 file libfuse2 make gcc flatpak
 
 ### macOS and Windows
 
-Not supported: AppImage, `.deb` and `.desktop` launchers are Linux concepts.
-On Windows, WSL 2 runs the command-line parts (source archives), but there is no
-desktop to add launchers to.
+Only `.dmg` files are supported on macOS (untested on real disk images; the
+automated tests stub `hdiutil`). AppImage, `.deb` and `.desktop` launchers are
+Linux concepts.
+
+Windows: not supported. WSL 2 runs the command-line parts (source archives), but
+there is no desktop to add launchers to.
 
 ### Verify the installation
 
@@ -178,7 +184,7 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 - **The launcher does not appear in the menu**: log out and in, or run
   `update-desktop-database ~/.local/share/applications`.
 - **`Unhandled file type`**: `plonk` does not recognise the file. Give it a
-  `.AppImage`, `.deb`, `.flatpak`, archive, `.run` file or script.
+  `.AppImage`, `.deb`, `.flatpak`, `.dmg`, archive, `.run` file or script.
 - **No launcher was created for an archive**: no executable in `bin/` or the
   top level matched the folder name. The archive is kept; launch it from `./<name>_extract`, or point `plonk` at that folder once you know the launcher.
 - **The build step does nothing**: `mmmake` could not find a build system in
@@ -186,7 +192,9 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 
 ## Limitations
 
-- Linux only, and `.deb` support is for Debian-family systems.
+- Linux (plus `.dmg` on macOS); `.deb` support is for Debian-family systems.
+- `.dmg`: no Gatekeeper or signature checks, and disk images that need a
+  password are not supported.
 - It relies on file names to recognise types, and treats any other executable
   or script as something to run.
 - Icon discovery is best-effort and may pick an unexpected image.

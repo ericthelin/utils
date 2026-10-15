@@ -16,7 +16,7 @@ need and ignore the rest.
 | [ls-enhanced](ls_enhanced/README.md) | One directory-listing command with short flags that uses eza/exa when available and falls back to plain `ls`. |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
 | [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
-| [plonk](plonk/README.md) | Install a downloaded Linux app (AppImage, `.deb`, Flatpak, source tarball or installer) with one command. |
+| [plonk](plonk/README.md) | Install a downloaded app (AppImage, `.deb`, Flatpak, macOS `.dmg`, source tarball or installer) with one command. |
 | [tgz](tgz/README.md) | Extract any archive into a tidy, correctly named folder without spilling files into the current directory. |
 | [to_h264](to_h264/README.md) | Batch-convert videos to H.264/AAC with HandBrake, optionally spread across machines. |
 | [to_m4b](to_m4b/README.md) | Combine a folder of MP3 or Opus files into one chaptered audiobook (`.m4b`). |

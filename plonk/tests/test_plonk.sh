@@ -66,6 +66,37 @@ touch dl/tool.deb dl/thing.flatpak
 "$BIN/plonk" -n dl/thing.flatpak 2>&1 | grep -q "flatpak install --user" \
   && check "a .flatpak is installed for the user" ok || check "a .flatpak is installed for the user" no
 
+# .dmg: hdiutil and ditto are stubbed; the "mounted image" is a plain folder.
+mkdir -p stubs img/Demo.app/Contents
+cat > stubs/hdiutil <<'SH'
+#!/bin/sh
+if [ "$1" = attach ]; then
+  cat <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>system-entities</key><array>
+<dict><key>dev-entry</key><string>/dev/disk9</string></dict>
+<dict><key>mount-point</key><string>$IMG_MOUNT</string></dict>
+</array></dict></plist>
+PL
+else
+  echo "$@" >> "$HDIUTIL_LOG"
+fi
+SH
+printf '#!/bin/sh\ncp -R "$1" "$2"\n' > stubs/ditto
+chmod +x stubs/*
+export IMG_MOUNT="$work/img" HDIUTIL_LOG="$work/hdiutil.log"
+touch dl/Demo.dmg dl/Keep.dmg
+"$BIN/plonk" -n dl/Demo.dmg 2>&1 | grep -q "hdiutil attach" \
+  && check "a .dmg dry run shows the hdiutil command" ok || check "a .dmg dry run shows the hdiutil command" no
+PATH="$work/stubs:$PATH" "$BIN/plonk" --copy dl/Keep.dmg >/dev/null 2>&1
+[[ -d "$HOME/Applications/Demo.app/Contents" && -f dl/Keep.dmg ]] \
+  && check "a .dmg's .app is installed into ~/Applications and --copy keeps the image" ok || check "a .dmg's .app is installed into ~/Applications and --copy keeps the image" no
+grep -q "detach $work/img" "$HDIUTIL_LOG" \
+  && check "the image is detached afterwards" ok || check "the image is detached afterwards" no
+PATH="$work/stubs:$PATH" "$BIN/plonk" dl/Demo.dmg >/dev/null 2>&1
+[[ ! -e dl/Demo.dmg ]] \
+  && check "the .dmg is deleted after a successful install" ok || check "the .dmg is deleted after a successful install" no
+
 # Source archive: extracted, then built and installed via the sibling tgz and mmmake tools.
 mkdir -p proj-1.0
 cat > proj-1.0/Makefile <<'MK'
