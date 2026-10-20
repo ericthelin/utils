@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TOOL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, TOOL_DIR)
@@ -744,13 +745,15 @@ class CliTests(TempDirTestCase):
         self.assertIn("--follow", err)
         self.assertFalse(os.path.exists(self.path("a.mp3")))
 
-    def test_no_matching_files_is_an_error(self):
+    @mock.patch.object(type(recipes.get("mp3")), "missing", return_value=[])
+    def test_no_matching_files_is_an_error(self, _missing):
         os.makedirs(self.path("empty"))
         code, _, err = self.call("mp3", self.path("empty"))
         self.assertEqual(code, 1)
         self.assertIn("no mp3 source files", err)
 
-    def test_missing_path_is_reported(self):
+    @mock.patch.object(type(recipes.get("mp3")), "missing", return_value=[])
+    def test_missing_path_is_reported(self, _missing):
         code, _, err = self.call("mp3", self.path("nope.flac"))
         self.assertEqual(code, 1)
         self.assertIn("not a file or folder", err)
@@ -834,7 +837,10 @@ class AudioConversionTests(TempDirTestCase):
 
 
 def has_libass():
-    done = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
+    try:
+        done = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
+    except OSError:
+        return False
     return any(line.split()[1:2] == ["subtitles"] for line in done.stdout.splitlines())
 
 
