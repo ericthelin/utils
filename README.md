@@ -22,6 +22,7 @@ need and ignore the rest.
 | [to_m4b](to_m4b/README.md) | Combine a folder of MP3 or Opus files into one chaptered audiobook (`.m4b`). |
 | [to_media](to_media/README.md) | Reshape audio, images and audiobooks from one format to another with one safe command; a job server for large batches is planned. |
 | [to_mp3](to_mp3/README.md) | Convert M4A, M4B, OGG, FLAC, WAV, WMA and Audible files to MP3, keeping the tags. |
+| [verify_media](verify_media/README.md) | Check downloaded audio and video files (mp3, m4b, mp4, mkv, ...) for truncation and corruption, e.g. after a torrent. |
 
 ## Using a tool
 
