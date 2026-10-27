@@ -11,7 +11,8 @@ Branch 'login-fix' does not start with a standard prefix.
   4) refactor/login-fix
   5) chore/login-fix
   6) spike/login-fix
-Choose 1-6 to add a prefix, or press Enter to keep 'login-fix': 3
+  7) bugfix/login-fix
+Choose 1-7 to add a prefix, or press Enter to keep 'login-fix': 3
 Switched to a new branch 'feature/login-fix'
 
   ★ CREATED NEW BRANCH: feature/login-fix
@@ -22,7 +23,7 @@ Switched to a new branch 'feature/login-fix'
 - **One command for both cases.** An existing branch is checked out
   (`✔ REUSED EXISTING BRANCH`); a missing one is created (`★ CREATED NEW BRANCH`).
 - **Consistent branch names.** Before creating a branch that does not start with
-  `rc/`, `hotfix/`, `feature/`, `refactor/`, `chore/` or `spike/`, it offers to
+  `rc/`, `hotfix/`, `feature/`, `refactor/`, `chore/`, `spike/` or `bugfix/`, it offers to
   add one. Press Enter to keep the name exactly as typed.
 - **History that matches reality.** If you add a prefix, the `git go NAME` entry
   in your shell history is rewritten to `git go feature/NAME`, so searching the

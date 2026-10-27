@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-PREFIXES = ("rc/", "hotfix/", "feature/", "refactor/", "chore/", "spike/")
+PREFIXES = ("rc/", "hotfix/", "feature/", "refactor/", "chore/", "spike/", "bugfix/")
 HISTORY_LOOKBACK = 5
 
 
