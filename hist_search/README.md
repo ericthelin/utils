@@ -28,8 +28,8 @@ $ ▮                      <- you press Ctrl-R
   (`^prefix`, `suffix$`, `'exact`, `!negate`, `a|b`) narrows fuzzy matches
   without leaving fuzzy mode.
 - **Pick the ranking that fits.** Press Tab again to switch from
-  most-recent-first (the default) to best-match ranking, in either fuzzy or
-  regex mode.
+  most-recent-first (the default) to best-match ranking. Both fuzzy modes
+  put literal query-word matches ahead of loose character matches.
 - **Mouse-friendly.** Click a row to pick it, or scroll the wheel to move the
   selection.
 - **No fzf, no plugins, no install step.** One Python file that uses only the
@@ -84,7 +84,11 @@ below.
 ### Extended fuzzy search syntax
 
 In fuzzy mode, a query is split on spaces into terms that must **all**
-match (AND). Each term also understands:
+match (AND). Commands containing every term as a literal substring rank
+first, in any term order; loose fuzzy matches remain available below them.
+For example, `git go error` prioritizes `git go bugfix/error-handler` over
+commands where the letters of `go` or `error` are scattered.
+Each term also understands:
 
 | Syntax | Meaning |
 | --- | --- |
@@ -145,11 +149,13 @@ export HIST_SEARCH_KEY_CANCEL=ctrl-g      # cancel with Ctrl-G instead of Esc
   kept together. Bash timestamp lines (`#1690000000`) are ignored.
 - **Order.** Newest first, with each distinct command shown once (its most
   recent use).
-- **Ranking.** RECENT mode (the default) keeps matches in most-recent-first
-  order. BEST mode sorts by match quality instead: for fuzzy matches, the
-  smallest gap between the first and last matched character wins, then the
-  earliest match, then recency; for regex matches, the earliest match start
-  wins, then recency.
+- **Ranking.** Both fuzzy modes put commands containing every query term
+  literally ahead of loose subsequence matches, respecting smart case and
+  extended operators (including OR and negation). Within each tier, RECENT
+  mode (the default) keeps most-recent-first order; BEST mode sorts by the
+  combined matched spans, then match positions, then recency. Regex RECENT
+  keeps most-recent-first order; regex BEST sorts by earliest match start,
+  then recency.
 - **Display.** Up to 10 matches (fewer on very short terminals), plus a status
   line showing position/total and a scrollbar thumb on the right edge when
   there are more matches than fit on screen. Multi-line commands show a `⏎`
