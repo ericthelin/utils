@@ -1,20 +1,10 @@
 #!/bin/bash
 # Enhanced ls wrapper that uses eza/exa if available, falls back to ls
 #
-# Custom alias flags (must map to equivalent ls/eza/exa flags):
-#   -d  -> long listing of everything, newest last
-#   -l  -> long format with all files
-#   -ll -> extra long format
-#   -lt -> long format, sorted by time
-#   -llt -> extra long format, sorted by time
-#   -lT -> long format with deeper tree
-#   -s  -> sorted by size
-#   -t  -> sorted by time
-#   -dir -> single column output
+# Alias views use --ls-enhanced-view=... so explicit ls/eza/exa flags pass through.
 #
 # Verbose diagnostics:
-#   -v, --verbose, -V   increase verbosity by one level (repeatable)
-#   -VV, -VVV, ...       chained short flags add one level per V
+#   --ls-enhanced-verbose  increase verbosity by one level (repeatable)
 #   LS_ENHANCED_VERBOSE   set the starting verbosity level directly (integer)
 #   Levels: 1 = show the resolved command; 2 = also show tool detection and
 #   capability probes; 3 = also show raw arguments and fallback details.
@@ -56,8 +46,8 @@ eza_cmd=$(find_command eza)
 exa_cmd=$(find_command exa)
 forced_tool=${LS_ENHANCED_TOOL:-}
 
-# Verbosity level: can be preset via LS_ENHANCED_VERBOSE, then bumped by
-# -v/-V/--verbose flags (repeatable, and -V may be chained as -VVV).
+# Verbosity level can be preset via LS_ENHANCED_VERBOSE or increased with
+# repeated --ls-enhanced-verbose flags.
 verbose_level=0
 if [ -n "${LS_ENHANCED_VERBOSE:-}" ]; then
   if [[ "$LS_ENHANCED_VERBOSE" =~ ^[0-9]+$ ]]; then
@@ -75,20 +65,46 @@ vlog() {
   fi
 }
 
-# Pre-scan args purely for verbosity flags so -v/-V/--verbose (and chained
-# -VVV) also affect the diagnostic output emitted before the main arg loop.
+# Pre-scan verbosity and distinguish the wrapper's help from an alias asking
+# for the selected backend's help.
+alias_view=false
+help_requested=false
 for pre_arg in "$@"; do
   case "$pre_arg" in
-    -v|--verbose|-V)
+    --ls-enhanced-view=*|--full-list) alias_view=true ;;
+    --help) help_requested=true ;;
+    --ls-enhanced-verbose)
       verbose_level=$((verbose_level + 1))
-      ;;
-    -V*)
-      if [[ "$pre_arg" =~ ^-V+$ ]]; then
-        verbose_level=$((verbose_level + ${#pre_arg} - 1))
-      fi
       ;;
   esac
 done
+
+if [ "$help_requested" = true ] && [ "$alias_view" = false ]; then
+  cat <<'HELP'
+Usage: ls-enhanced [view] [ls/eza options] [paths ...]
+
+Views for shell aliases (not passed to ls, eza, or exa):
+  --ls-enhanced-view=default       Default listing
+  --ls-enhanced-view=full          Long listing of contents, newest last
+  --ls-enhanced-view=long          Long listing with hidden files
+  --ls-enhanced-view=extra-long    Long listing including . and ..
+  --ls-enhanced-view=tree-2        Two-level tree
+  --ls-enhanced-view=tree-2-long   Two-level long tree
+  --ls-enhanced-view=tree-4        Four-level tree
+  --ls-enhanced-view=size          Long listing sorted by size
+  --ls-enhanced-view=time          Long listing sorted by time
+  --ls-enhanced-view=one-column    One entry per line
+
+  --ls-enhanced-verbose           Show the selected command (repeat for detail)
+  --help                          Show this help
+
+Other options and paths are passed to the selected backend. In an alias that
+uses --ls-enhanced-view, --help shows the backend's help instead.
+
+Environment: LS_ENHANCED_TOOL=ls|eza|exa, LS_ENHANCED_VERBOSE=LEVEL
+HELP
+  exit 0
+fi
 
 print_command() {
   local quoted=()
@@ -207,17 +223,12 @@ fi
 
 for arg in "$@"; do
   case "$arg" in
-    -v|--verbose|-V)
+    --ls-enhanced-view=default)
+      ;;
+    --ls-enhanced-verbose)
       : # already counted in the verbosity pre-scan above
       ;;
-    -V*)
-      if [[ "$arg" =~ ^-V+$ ]]; then
-        : # already counted in the verbosity pre-scan above
-      else
-        final_args+=("$arg")
-      fi
-      ;;
-    -d)
+    --ls-enhanced-view=full|--full-list)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-lart")
         append_ls_color_arg
@@ -225,7 +236,7 @@ for arg in "$@"; do
         final_args+=("-lagmF" "-snew" "--color=auto" "--icons")
       fi
       ;;
-    -l)
+    --ls-enhanced-view=long)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-l" "--all")
         append_ls_group_dirs_arg
@@ -234,7 +245,7 @@ for arg in "$@"; do
         add_git_arg "--git"
       fi
       ;;
-    -ll)
+    --ls-enhanced-view=extra-long)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-l" "-a" "-a")
         append_ls_group_dirs_arg
@@ -243,7 +254,7 @@ for arg in "$@"; do
         add_git_arg "--git"
       fi
       ;;
-    -lt)
+    --ls-enhanced-view=tree-2)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-l" "-t")
         append_ls_group_dirs_arg
@@ -252,7 +263,7 @@ for arg in "$@"; do
         add_git_arg "--git-ignore"
       fi
       ;;
-    -llt)
+    --ls-enhanced-view=tree-2-long)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-l" "-t")
         append_ls_group_dirs_arg
@@ -261,7 +272,7 @@ for arg in "$@"; do
         add_git_arg "--git-ignore"
       fi
       ;;
-    -lT)
+    --ls-enhanced-view=tree-4)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-laR")
         append_ls_group_dirs_arg
@@ -270,7 +281,7 @@ for arg in "$@"; do
         add_git_arg "--git-ignore"
       fi
       ;;
-    -s)
+    --ls-enhanced-view=size)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-lagF" "-S")
         append_ls_color_arg
@@ -279,7 +290,7 @@ for arg in "$@"; do
         add_git_arg "--git"
       fi
       ;;
-    -t)
+    --ls-enhanced-view=time)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-lagF" "-t")
         append_ls_color_arg
@@ -288,7 +299,7 @@ for arg in "$@"; do
         add_git_arg "--git"
       fi
       ;;
-    -dir)
+    --ls-enhanced-view=one-column)
       if [ "$primary_cmd" = "ls" ]; then
         final_args+=("-1")
       else

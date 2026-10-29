@@ -1,16 +1,15 @@
 # ls-enhanced
 
-**One directory-listing command with short, memorable flags that uses `eza` (or `exa`) for icons, colour and git status when you have it, and falls back to plain `ls` anywhere else.**
+**One directory-listing command for short shell aliases that uses `eza` (or `exa`) for icons, colour and git status when you have it, and falls back to plain `ls` anywhere else.**
 
-`ls-enhanced -l`, `-t`, `-s`, `-lT`: a handful of one-letter views (long list,
-newest files, biggest files, tree) that behave the same on every machine you
-use, whether it has a fancy modern `ls` replacement installed or nothing but
-the basics.
+Set up aliases for a handful of views (long list, newest files, biggest files,
+tree) that behave the same on every machine you use. Flags you type after an
+alias go to the selected listing command.
 
 An illustrative listing (your icons and columns will differ):
 
 ```console
-$ ls-enhanced -l
+$ ls-enhanced --ls-enhanced-view=long
  .git
  src
  Cargo.toml   1.2k eric 21 Sep 09:12 -- M
@@ -19,38 +18,43 @@ $ ls-enhanced -l
 
 ## Why use it
 
-- **The same commands everywhere.** Put your aliases in your dotfiles once. On a
-  server with only GNU `ls`, `-l` and `-s` still do the sensible thing.
+- **The same commands everywhere.** Put your aliases in your dotfiles once;
+  their views work with `eza`, `exa`, or plain `ls`.
 - **Modern output when available.** With `eza` you get icons, colour-scaled
   sizes, directories listed first, and git status columns. Without it you get a
   tidy classic listing.
-- **Views you actually use.** Newest last (`-d`), biggest (`-s`), a quick tree
-  (`-lt`, `-lT`), one per line (`-dir`), and a full long listing (`-l`).
+- **Views you actually use.** A full listing (`d`), a named directory entry
+  (`d -d`), biggest files (`s`), trees (`lt`, `lT`), one per line (`dir`), and a
+  long listing (`l`).
 - **Never leaves you with an error.** If `eza` fails for any reason (an
   unsupported flag, a crash), the same view is re-run with plain `ls`.
 - **Git-aware but forgiving.** Some `eza`/`exa` builds are compiled without git
   support; `ls-enhanced` detects that and simply skips the git columns.
-- **Debuggable.** `-v` shows the exact command it ran; `-vv` and `-vvv` explain
-  how it chose a tool and the flags.
+- **Debuggable.** `--ls-enhanced-verbose` shows the exact command it ran;
+  repeat it for tool detection and argument details.
 - **Backend on demand.** Force `ls`, `eza` or `exa` with one environment variable.
 
 ## Quick start
 
-`ls-enhanced` changes what some short flags mean, so it is meant to be used
-through aliases rather than replacing `ls` in scripts:
+Use wrapper-specific long options in aliases so flags typed after an alias
+still keep their normal `ls` meaning:
 
 ```bash
 # in ~/.bashrc or ~/.zshrc
-alias l='ls-enhanced'
-alias ll='ls-enhanced -l'
-alias lt='ls-enhanced -lt'
-alias lS='ls-enhanced -s'
+alias d='ls-enhanced --ls-enhanced-view=full'
+alias ls='ls-enhanced --ls-enhanced-view=default'
+alias l='ls-enhanced --ls-enhanced-view=long'
+alias ll='ls-enhanced --ls-enhanced-view=extra-long'
+alias lt='ls-enhanced --ls-enhanced-view=tree-2'
+alias s='ls-enhanced --ls-enhanced-view=size'
 ```
 
 ```bash
 ll ~/projects            # long listing, hidden files, directories first
-lS                       # biggest files, in the current directory
-ls-enhanced -v -l        # show the exact command that ran
+s                        # biggest files, in the current directory
+ls-enhanced --ls-enhanced-verbose --ls-enhanced-view=long
+d project                 # list the contents of project
+d -d project              # show the project directory entry itself
 ```
 
 ## Usage
@@ -59,28 +63,35 @@ ls-enhanced -v -l        # show the exact command that ran
 ls-enhanced [view] [ls/eza options] [paths ...]
 ```
 
-Give it at most one view flag. Anything else you type (paths and ordinary
-options such as `-la` or `-h`) is passed to the underlying tool unchanged.
+Use one wrapper view flag. Paths and ordinary options such as `-d`, `-l`,
+`-s`, `-t`, and `-h` are passed to the underlying tool unchanged.
 **With no options at all, even if you pass paths, you get the default view.**
 
 | Flag | View | With `eza` / `exa` | With plain `ls` |
 | --- | --- | --- | --- |
-| *(none)* | Default | icons, sorted newest last, size colour scale, git status | `-F` (mark types) with colour |
-| `-d` | Everything, newest last | long, all files, group, modified, icons, size colour scale | `-lart` with colour |
-| `-l` | Long list, hidden files, directories first | `-l --all --group-directories-first --icons` + git | `-l --all` (+ directories first) |
-| `-ll` | As `-l`, also showing `.` and `..` | `-l --all --all ...` + git | `-l -a -a` (+ directories first) |
-| `-lt` | Two-level tree | `-T --level=2` with icons, git-ignore aware | `-l -t` (long, newest first) |
-| `-llt` | Two-level long tree | `-lT --level=2` with icons, git-ignore aware | `-l -t` |
-| `-lT` | Deeper tree (four levels) | `-T --level=4` with icons, git-ignore aware | `-laR` (recursive) |
-| `-s` | Sorted by size | long, all files, sorted by size, icons + git | `-lagF -S` with colour |
-| `-t` | Long list as a tree, newest last | long, all files, tree, icons + git | `-lagF -t` with colour |
-| `-dir` | One entry per line | `-1 --icons` | `-1` |
+| `--ls-enhanced-view=default` (or no view) | Default; used by `ls` | icons, sorted newest last, size colour scale, git status | `-F` (mark types) with colour |
+| `--ls-enhanced-view=full` | Full listing of contents, newest last; used by `d` | long, all files, group, modified, icons, size colour scale | `-lart` with colour |
+| `--ls-enhanced-view=long` | Long list, hidden files, directories first; used by `l` and `la` | `-l --all --group-directories-first --icons` + git | `-l --all` (+ directories first) |
+| `--ls-enhanced-view=extra-long` | As long, also showing `.` and `..`; used by `ll` | `-l --all --all ...` + git | `-l -a -a` (+ directories first) |
+| `--ls-enhanced-view=tree-2` | Two-level tree; used by `lt` | `-T --level=2` with icons, git-ignore aware | `-l -t` (long, newest first) |
+| `--ls-enhanced-view=tree-2-long` | Two-level long tree; used by `llt` | `-lT --level=2` with icons, git-ignore aware | `-l -t` |
+| `--ls-enhanced-view=tree-4` | Deeper tree (four levels); used by `lT` | `-T --level=4` with icons, git-ignore aware | `-laR` (recursive) |
+| `--ls-enhanced-view=size` | Sorted by size; used by `s` | long, all files, sorted by size, icons + git | `-lagF -S` with colour |
+| `--ls-enhanced-view=time` | Long list as a tree, newest last; used by `t` | long, all files, tree, icons + git | `-lagF -t` with colour |
+| `--ls-enhanced-view=one-column` | One entry per line; used by `dir` | `-1 --icons` | `-1` |
+
+`--full-list` is accepted as a compatibility spelling for
+`--ls-enhanced-view=full` in shells that loaded an older `d` alias.
 
 | Verbosity | Effect |
 | --- | --- |
-| `-v`, `--verbose`, `-V` | Show the exact command that will be run. Repeat (`-vv`) or chain (`-VV`) for more. |
+| `--ls-enhanced-verbose` | Show the exact command that will be run. Repeat for more detail. |
 | Level 2 | Also shows which tools were found, which was chosen, and whether git columns are supported. |
 | Level 3 | Also shows the raw arguments, the final flag list and what was dropped in a fallback. |
+
+`ls-enhanced --help` shows this wrapper's options. `ls --help`, `d --help`,
+and other aliases that include `--ls-enhanced-view` show the selected backend's
+help instead.
 
 | Environment variable | Meaning |
 | --- | --- |
@@ -95,7 +106,8 @@ options such as `-la` or `-h`) is passed to the underlying tool unchanged.
 - **Fallback:** if `eza` or `exa` exits with an error, `ls-enhanced` prints
   `Command failed (exit code N), falling back to ls...`, drops the flags plain
   `ls` does not understand (icons, sort keys, tree and git flags) and runs `ls`
-  instead. `eza`'s own error output is hidden, so run with `-v` to see the
+  instead. `eza`'s own error output is hidden, so run with
+  `--ls-enhanced-verbose` to see the
   command it tried.
 - **Colour:** `--color=auto` is switched to `--color-scale=size` for `eza` and
   `exa`, so file sizes are shaded by magnitude. The age scale is left off
@@ -103,8 +115,11 @@ options such as `-la` or `-h`) is passed to the underlying tool unchanged.
   timestamps are corrupt or fall in a daylight-saving gap.
   With plain `ls`, `--color=auto` is used, or `-G` on systems whose `ls` has that
   instead.
-- **Only exact matches** of the flags above are treated as views. `-la`, `-h`,
-  `-R` and friends are not, and reach the tool as you typed them.
+- **Only wrapper-specific long options** select a view. Explicit short flags
+  reach the backend as typed.
+- **Directory entries:** `-d` is a backend flag. The `d` alias's long view means
+  `d path` lists the path's contents, while `d -d path` shows the named entry.
+  For a symlink, the long view shows `-> target`.
 
 ## Installation
 
@@ -163,8 +178,8 @@ follow the Debian/Ubuntu steps.
 ### Verify the installation
 
 ```bash
-ls-enhanced -v -l .           # prints "Using command: ..." then a listing
-LS_ENHANCED_TOOL=ls ls-enhanced -l .   # same view with plain ls
+ls-enhanced --ls-enhanced-verbose --ls-enhanced-view=long .
+LS_ENHANCED_TOOL=ls ls-enhanced --ls-enhanced-view=long .
 ```
 
 ### Putting `ls-enhanced` on your PATH
@@ -180,7 +195,7 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 
 - **Icons show as boxes**: install a Nerd Font and select it in your terminal.
 - **`Command failed ... falling back to ls`**: `eza` rejected a flag. Run with
-  `-v` and try the printed command by hand.
+  `--ls-enhanced-verbose` and try the printed command by hand.
 - **`eza` panics with `No such local time`**: a file has a timestamp that does
   not exist in your time zone (often a corrupt birth time, see `stat`). That
   `eza` build cannot colour or format it; `ls-enhanced` avoids the age colour
@@ -194,11 +209,9 @@ export PATH="/path/to/utils/bin:$PATH"     # add to ~/.bashrc or ~/.zshrc
 
 ## Limitations
 
-- The view flags (`-d`, `-l`, `-s`, `-t`, ...) deliberately differ from their
-  meanings in plain `ls`, so it is not a drop-in replacement for `ls` in scripts.
-- Only one view flag makes sense per call; combining several is not defined.
-- The same flag can look different between backends (for example `-t` is a tree
-  with `eza` but a time-sorted list with `ls`).
+- Backend flags can have different meanings between `eza`, `exa`, and plain
+  `ls`; wrapper views give aliases predictable results across them.
+- Combining several wrapper views is not defined.
 - Plain-`ls` fallback needs GNU-style options; BSD `ls` is not fully supported.
 
 ## Development
