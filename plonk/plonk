@@ -4,6 +4,7 @@ import sys
 import argparse
 import shutil
 import subprocess
+import plistlib
 from pathlib import Path
 
 
@@ -40,6 +41,57 @@ def is_appimage(filename):
 
 def is_deb(filename):
     return filename.lower().endswith('.deb')
+
+def is_dmg(filename):
+    return filename.lower().endswith('.dmg')
+
+def parse_mount_points(plist_bytes):
+    data = plistlib.loads(plist_bytes)
+    return [Path(e['mount-point']) for e in data.get('system-entities', []) if e.get('mount-point')]
+
+def find_payloads(mount_points):
+    apps, pkgs = [], []
+    for mount in mount_points:
+        for item in sorted(mount.iterdir()):
+            if item.suffix == '.app':
+                apps.append(item)
+            elif item.suffix in ('.pkg', '.mpkg'):
+                pkgs.append(item)
+    return apps, pkgs
+
+def install_dmg(file_path, keep, dryrun=False, verbose=False):
+    attach = ['hdiutil', 'attach', '-nobrowse', '-readonly', '-noverify', '-plist', str(file_path)]
+    if dryrun:
+        run(attach, dryrun=True)
+        print("Would copy the .app (or run the .pkg installer) found in the image into ~/Applications")
+        return
+    if verbose:
+        print(' '.join(shlex_quote(a) for a in attach))
+    result = subprocess.run(attach, input=b'Y\n', stdout=subprocess.PIPE, check=True)
+    mounts = parse_mount_points(result.stdout)
+    try:
+        apps, pkgs = find_payloads(mounts)
+        if apps:
+            app_dir = Path.home() / 'Applications'
+            app_dir.mkdir(parents=True, exist_ok=True)
+            for app in apps:
+                dest = app_dir / app.name
+                if dest.exists():
+                    shutil.rmtree(dest)
+                run(['ditto', str(app), str(dest)], verbose=verbose)
+                print(f"Installed {dest}")
+        elif pkgs:
+            for pkg in pkgs:
+                run(['sudo', 'installer', '-pkg', str(pkg), '-target', '/'], verbose=verbose)
+        else:
+            print(f"No .app or .pkg found in {file_path}", file=sys.stderr)
+            return False
+    finally:
+        for mount in mounts:
+            subprocess.run(['hdiutil', 'detach', str(mount)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not keep:
+        file_path.unlink()
+    return True
 
 def create_launcher(exec_path, symlink_path, app_name, icon_path=None, dryrun=False, verbose=False):
     """Create a .desktop launcher for the given executable."""
@@ -213,7 +265,7 @@ def install_extracted(extract_dir, verbose=False):
 
 def main():
 
-    parser = argparse.ArgumentParser(description='Install AppImage, .deb, or build from archive')
+    parser = argparse.ArgumentParser(description='Install AppImage, .deb, .dmg, or build from archive')
     parser.add_argument('file', help='File to install')
     parser.add_argument('-n', '--dryrun', action='store_true', help='Dry run')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose')
@@ -226,8 +278,12 @@ def main():
 
     file_path = Path(args.file).expanduser().resolve()
     if not file_path.exists():
-        print(f"File not found: {file_path}", file=sys.stderr)
-        sys.exit(1)
+        installed = Path.home() / 'Applications' / file_path.name
+        if not installed.is_file():
+            print(f"File not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"{file_path} not found; using {installed} from an earlier install")
+        file_path = installed
 
     if file_path.is_dir():
         if not install_extracted(file_path, args.verbose):
@@ -239,8 +295,9 @@ def main():
         app_dir = Path.home() / 'Applications'
         app_dir.mkdir(parents=True, exist_ok=True)
         dest = app_dir / file_path.name
-        # Copy or move AppImage
-        if args.copy:
+        if file_path == dest:
+            pass
+        elif args.copy:
             if args.verbose or args.dryrun:
                 print(f"Copying {file_path} to {dest}")
             if not args.dryrun:
@@ -259,7 +316,7 @@ def main():
         import re
         def canonical_appimage_name(name):
             platforms = [
-                'ubuntu', 'debian', 'fedora', 'arch', 'centos', 'opensuse',
+                'ubuntu', 'ubu', 'debian', 'fedora', 'arch', 'centos', 'opensuse',
                 'linuxmint', 'elementary', 'popos', 'manjaro', 'kali', 'raspbian',
                 'alpine', 'void', 'gentoo', 'endeavouros', 'zorin', 'mint',
                 'parrot', 'mx', 'redhat', 'rhel', 'oracle', 'rocky', 'alma',
@@ -286,15 +343,27 @@ def main():
                 n += '.AppImage'
             return n
 
+        def name_stem(name):
+            return re.split(r'[-_. \d]', name, maxsplit=1)[0].lower()
+
+        def find_previous_symlink(new_name):
+            stem = name_stem(new_name)
+            if not stem:
+                return None
+            for f in sorted(app_dir.iterdir()):
+                if (f.is_symlink() and f.name.lower().endswith('.appimage')
+                        and name_stem(Path(os.readlink(f)).name) == stem):
+                    return f
+            return None
+
         base = canonical_appimage_name(file_path.name)
         symlink = app_dir / base
-
         symlink_exists = symlink.exists() or symlink.is_symlink()
-        if symlink_exists:
-            if args.verbose or args.dryrun:
-                print(f"Removing old symlink {symlink}")
-            if not args.dryrun:
-                symlink.unlink()
+        guessed = False
+        if not symlink_exists:
+            previous = find_previous_symlink(file_path.name)
+            if previous:
+                base, symlink, guessed = previous.name, previous, True
 
         for f in app_dir.iterdir():
             if f.is_symlink() and f.name.lower() == base.lower() and f != symlink:
@@ -303,7 +372,7 @@ def main():
                 if not args.dryrun:
                     f.unlink()
 
-        if not symlink_exists and not args.no_prompt:
+        if (guessed or not symlink_exists) and not args.no_prompt:
             try:
                 user_input = input(f"Symlink name [{base}]: ").strip()
                 if user_input:
@@ -312,6 +381,16 @@ def main():
             except (EOFError, KeyboardInterrupt):
                 print("\nSymlink creation cancelled.", file=sys.stderr)
                 return
+
+        if symlink.is_symlink():
+            if args.verbose or args.dryrun:
+                print(f"Replacing existing symlink {symlink}")
+            if not args.dryrun:
+                symlink.unlink()
+        elif symlink.exists():
+            print(f"Error: {symlink} exists and is not a symlink; not replacing it.", file=sys.stderr)
+            print(f"Installed {dest} without a symlink.", file=sys.stderr)
+            return
 
         if args.verbose or args.dryrun:
             print(f"Symlinking {dest} to {symlink}")
@@ -345,6 +424,16 @@ def main():
         icon_path = find_icon_for_executable(file_path)
         create_launcher(file_path, symlink, app_name, icon_path, dryrun=args.dryrun, verbose=args.verbose)
         print(f"Launcher created for {file_path}")
+        return
+
+    if is_dmg(file_path.name):
+        try:
+            ok = install_dmg(file_path, args.copy, dryrun=args.dryrun, verbose=args.verbose)
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"DMG install failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        if ok is False:
+            sys.exit(1)
         return
 
     if is_deb(file_path.name):

@@ -10,18 +10,20 @@ need and ignore the rest.
 | --- | --- |
 | [clip](clip/README.md) | One clipboard command for Linux, macOS and Windows shells: pipe text in, paste it anywhere. |
 | [dvd2iso](dvd2iso/README.md) | Copy a DVD in your drive into a single playable ISO, named from the disc. |
+| [git-go](git_go/README.md) | Switch to or create a branch with `git go`, offering a standard prefix (`feature/`, `rc/`, ...) and fixing your shell history to match. |
 | [git-pr](git_pr/README.md) | Push your branch and open the GitHub pull-request page in the right Chrome profile with `git pr`. |
 | [hist_search](hist_search/README.md) | A better Ctrl-R: fuzzy or regex search through your shell history, with no dependencies. |
 | [irmdir](irmdir/README.md) | `rmdir` that removes whole trees of empty folders and never touches a file. |
 | [ls-enhanced](ls_enhanced/README.md) | One directory-listing command with short flags that uses eza/exa when available and falls back to plain `ls`. |
 | [make_dvd](make_dvd/README.md) | Convert one or more video files into a DVD-Video ISO that fits a standard disc, with an auto-playing menu, chapters and optional burning. |
 | [mmmake](mmmake/README.md) | Build and install software from a source archive or folder, whatever build system it uses. |
-| [plonk](plonk/README.md) | Install a downloaded Linux app (AppImage, `.deb`, Flatpak, source tarball or installer) with one command. |
+| [plonk](plonk/README.md) | Install a downloaded app (AppImage, `.deb`, Flatpak, macOS `.dmg`, source tarball or installer) with one command. |
 | [tgz](tgz/README.md) | Extract any archive into a tidy, correctly named folder without spilling files into the current directory. |
 | [to_h264](to_h264/README.md) | Batch-convert videos to H.264/AAC with HandBrake, optionally spread across machines. |
 | [to_m4b](to_m4b/README.md) | Combine a folder of MP3 or Opus files into one chaptered audiobook (`.m4b`). |
 | [to_media](to_media/README.md) | Reshape audio, images and audiobooks from one format to another with one safe command; a job server for large batches is planned. |
 | [to_mp3](to_mp3/README.md) | Convert M4A, M4B, OGG, FLAC, WAV, WMA and Audible files to MP3, keeping the tags. |
+| [verify_media](verify_media/README.md) | Check downloaded audio and video files (mp3, m4b, mp4, mkv, ...) for truncation and corruption, e.g. after a torrent. |
 
 ## Using a tool
 

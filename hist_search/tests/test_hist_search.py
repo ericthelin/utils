@@ -172,6 +172,42 @@ class FilterCommandsTests(unittest.TestCase):
         result = hist_search.filter_commands(self.commands, r"^ls", True)
         self.assertEqual(result[0][1], "ls -la /tmp")
 
+    def test_literal_words_rank_before_newer_loose_matches_in_both_modes(self):
+        commands = [
+            "git ci -m 'add missing piece for feature flag' core/",
+            "git stash save error-code-tester",
+            "git go bugfix/error-handler",
+            "git go feature/improve-error-codes",
+        ]
+        for best_match in (False, True):
+            for query in ("git go", "git go error"):
+                with self.subTest(best_match=best_match, query=query):
+                    result = hist_search.filter_commands(commands, query, False, best_match)
+                    self.assertEqual({idx for idx, _cmd in result[:2]}, {2, 3})
+                    self.assertEqual({idx for idx, _cmd in result}, {0, 1, 2, 3})
+
+    def test_recent_preserves_recency_within_literal_and_loose_tiers(self):
+        commands = ["git show", "git go topic", "git checkout develop", "git go other"]
+        result = hist_search.filter_commands(commands, "git go", False)
+        self.assertEqual([idx for idx, _cmd in result], [1, 3, 0, 2])
+
+    def test_literal_priority_respects_smart_case(self):
+        commands = ["git gO topic", "git GO topic"]
+        result = hist_search.filter_commands(commands, "git go", False)
+        self.assertEqual([idx for idx, _cmd in result], [0, 1])
+        result = hist_search.filter_commands(commands, "git GO", False)
+        self.assertEqual([idx for idx, _cmd in result], [1])
+
+    def test_literal_priority_handles_or_negation_and_anchors(self):
+        commands = ["git show", "git go topic", "git switch topic", "git go blocked"]
+        result = hist_search.filter_commands(commands, "^git go|switch !blocked", False)
+        self.assertEqual([idx for idx, _cmd in result], [1, 2, 0])
+
+    def test_literal_terms_can_appear_in_any_order(self):
+        commands = ["git stash save error-code-tester", "echo error; git go topic"]
+        result = hist_search.filter_commands(commands, "git go error", False)
+        self.assertEqual([idx for idx, _cmd in result], [1, 0])
+
     def test_regex_mode_no_matches_is_empty(self):
         result = hist_search.filter_commands(self.commands, r"^nomatch", True)
         self.assertEqual(result, [])
@@ -523,7 +559,7 @@ class PickerEndToEndTests(unittest.TestCase):
         many = [f"echo item{i}" for i in range(30)]
         result = run_picker(many, [b"i", b"t", b"e", b"m", b"1", b"\r"])
         self.assertIn("\u2503", result)
-        self.assertTrue(result.endswith("echo item21"), result[-80:])
+        self.assertTrue(result.endswith("echo item19"), result[-80:])
 
     def test_rebound_cancel_key_via_env_var(self):
         result = run_picker(HISTORY, [b"\x19"], extra_env={"HIST_SEARCH_KEY_CANCEL": "ctrl-y"})

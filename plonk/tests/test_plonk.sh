@@ -36,12 +36,66 @@ mv_out="$(cd dl && cp MyApp-1.2.3-x86_64.AppImage MyApp-2.0.0-x86_64.AppImage &&
 [[ "$(readlink "$HOME/Applications/MyApp.AppImage")" == *MyApp-2.0.0* && ! -e dl/MyApp-2.0.0-x86_64.AppImage ]] \
   && check "upgrading repoints the symlink and moves (not copies) the file" ok || check "upgrading repoints the symlink and moves (not copies) the file: $mv_out" no
 
+cp dl/MyApp-1.2.3-x86_64.AppImage dl/Other-3.0-x86_64.AppImage
+printf 'MyApp.AppImage\n' | "$BIN/plonk" dl/Other-3.0-x86_64.AppImage >/dev/null 2>&1
+[[ "$(readlink "$HOME/Applications/MyApp.AppImage")" == *Other-3.0* ]] \
+  && check "a typed symlink name that already exists is replaced" ok || check "a typed symlink name that already exists is replaced" no
+
+cp dl/MyApp-1.2.3-x86_64.AppImage dl/Slicer_ubu24-v02.08.04.57-20260922164607.AppImage
+"$BIN/plonk" --no-prompt dl/Slicer_ubu24-v02.08.04.57-20260922164607.AppImage >/dev/null 2>&1
+[[ -L "$HOME/Applications/Slicer.AppImage" ]] \
+  && check "an abbreviated platform tag (ubu24) is stripped from the symlink name" ok || check "an abbreviated platform tag (ubu24) is stripped from the symlink name" no
+
+cp dl/MyApp-1.2.3-x86_64.AppImage dl/Widget_foo-1.0-x86_64.AppImage
+"$BIN/plonk" --no-prompt dl/Widget_foo-1.0-x86_64.AppImage >/dev/null 2>&1
+cp dl/MyApp-1.2.3-x86_64.AppImage dl/Widget_bar-2.0-x86_64.AppImage
+prompt_out="$(printf '\n' | "$BIN/plonk" dl/Widget_bar-2.0-x86_64.AppImage 2>&1)"
+[[ "$prompt_out" == *"Symlink name [Widget_foo.AppImage]"* \
+   && "$(readlink "$HOME/Applications/Widget_foo.AppImage")" == *Widget_bar-2.0* \
+   && ! -e "$HOME/Applications/Widget_bar.AppImage" ]] \
+  && check "an existing symlink for the same app is offered and repointed" ok || check "an existing symlink for the same app is offered and repointed: $prompt_out" no
+
+resume_out="$(cd dl && "$BIN/plonk" --no-prompt Widget_bar-2.0-x86_64.AppImage 2>&1)"
+[[ $? -eq 0 && "$resume_out" == *"from an earlier install"* ]] \
+  && check "a file already moved into ~/Applications is found there" ok || check "a file already moved into ~/Applications is found there: $resume_out" no
+
 # .deb and .flatpak are only planned in a dry run.
 touch dl/tool.deb dl/thing.flatpak
 "$BIN/plonk" -n dl/tool.deb 2>&1 | grep -q "sudo apt install" \
   && check "a .deb is installed with apt" ok || check "a .deb is installed with apt" no
 "$BIN/plonk" -n dl/thing.flatpak 2>&1 | grep -q "flatpak install --user" \
   && check "a .flatpak is installed for the user" ok || check "a .flatpak is installed for the user" no
+
+# .dmg: hdiutil and ditto are stubbed; the "mounted image" is a plain folder.
+mkdir -p stubs img/Demo.app/Contents
+cat > stubs/hdiutil <<'SH'
+#!/bin/sh
+if [ "$1" = attach ]; then
+  cat <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>system-entities</key><array>
+<dict><key>dev-entry</key><string>/dev/disk9</string></dict>
+<dict><key>mount-point</key><string>$IMG_MOUNT</string></dict>
+</array></dict></plist>
+PL
+else
+  echo "$@" >> "$HDIUTIL_LOG"
+fi
+SH
+printf '#!/bin/sh\ncp -R "$1" "$2"\n' > stubs/ditto
+chmod +x stubs/*
+export IMG_MOUNT="$work/img" HDIUTIL_LOG="$work/hdiutil.log"
+touch dl/Demo.dmg dl/Keep.dmg
+"$BIN/plonk" -n dl/Demo.dmg 2>&1 | grep -q "hdiutil attach" \
+  && check "a .dmg dry run shows the hdiutil command" ok || check "a .dmg dry run shows the hdiutil command" no
+PATH="$work/stubs:$PATH" "$BIN/plonk" --copy dl/Keep.dmg >/dev/null 2>&1
+[[ -d "$HOME/Applications/Demo.app/Contents" && -f dl/Keep.dmg ]] \
+  && check "a .dmg's .app is installed into ~/Applications and --copy keeps the image" ok || check "a .dmg's .app is installed into ~/Applications and --copy keeps the image" no
+grep -q "detach $work/img" "$HDIUTIL_LOG" \
+  && check "the image is detached afterwards" ok || check "the image is detached afterwards" no
+PATH="$work/stubs:$PATH" "$BIN/plonk" dl/Demo.dmg >/dev/null 2>&1
+[[ ! -e dl/Demo.dmg ]] \
+  && check "the .dmg is deleted after a successful install" ok || check "the .dmg is deleted after a successful install" no
 
 # Source archive: extracted, then built and installed via the sibling tgz and mmmake tools.
 mkdir -p proj-1.0

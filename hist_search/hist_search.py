@@ -188,7 +188,7 @@ def parse_extended_query(query):
     return [token.split("|") for token in query.split()]
 
 
-def _match_leaf(leaf, text, case_sensitive):
+def _match_leaf(leaf, text, case_sensitive, literal_terms=False):
     """Evaluate one extended-syntax leaf term against text.
 
     Returns (matched, score): score is a (span, start) tuple used only
@@ -201,6 +201,9 @@ def _match_leaf(leaf, text, case_sensitive):
         leaf = leaf[1:]
     if not leaf:
         return (not negate, (0, 0))
+
+    if literal_terms and not negate and not _is_special_term(leaf):
+        leaf = "'" + leaf
 
     if not (leaf.startswith("^") or leaf.startswith("'") or leaf.endswith("$")):
         score = fuzzy_score(leaf, text, case_sensitive)
@@ -224,7 +227,7 @@ def _match_leaf(leaf, text, case_sensitive):
     return (matched, (0, 0))
 
 
-def extended_score(query, text):
+def extended_score(query, text, literal_terms=False):
     """fzf-style extended search on top of plain fuzzy matching.
 
     A query is split into space-separated AND groups, each of which may
@@ -233,6 +236,9 @@ def extended_score(query, text):
     '^prefix', 'suffix$', '^exact$', "'exact-substring", or a '!'-negated
     form of any of those. Smart-case applies to the whole query: any
     uppercase letter anywhere makes every term case-sensitive.
+
+    With literal_terms=True, positive plain terms require contiguous
+    substrings; extended operators and negation keep their semantics.
 
     Returns a combined score (lower ranks first) if every AND group has
     at least one matching alternative, else None. A single plain term
@@ -243,7 +249,8 @@ def extended_score(query, text):
 
     groups = parse_extended_query(query)
     case_sensitive = any(ch.isupper() for ch in query)
-    if len(groups) == 1 and len(groups[0]) == 1 and not _is_special_term(groups[0][0]):
+    if (not literal_terms and len(groups) == 1 and len(groups[0]) == 1
+            and not _is_special_term(groups[0][0])):
         return fuzzy_score(query, text, case_sensitive)
 
     total_span = 0
@@ -251,7 +258,7 @@ def extended_score(query, text):
     for group in groups:
         best = None
         for leaf in group:
-            matched, score = _match_leaf(leaf, text, case_sensitive)
+            matched, score = _match_leaf(leaf, text, case_sensitive, literal_terms)
             if matched and (best is None or score < best):
                 best = score
         if best is None:
@@ -447,11 +454,11 @@ def filter_commands(commands, query, regex_mode, best_match=False):
     """Return matches for query, in either "best match" or "most recent"
     order.
 
-    `best_match=True` ranks by score (span/position for fuzzy, match
-    start for regex), same as before. `best_match=False` (the default)
-    keeps matches in the order they were found while scanning
-    `commands`, which is already most-recent-first (see read_history),
-    so recency wins over match quality.
+    Fuzzy matches containing every query term as a literal substring
+    rank ahead of loose subsequence matches in both sort modes.
+    Within each tier, `best_match=True` ranks by span/position and
+    `best_match=False` (the default) preserves most-recent-first order.
+    Regex mode ranks by match start or recency without literal tiers.
 
     Fuzzy mode supports fzf-style extended-search syntax (AND/OR terms,
     anchors, exact substrings, negation - see extended_score) and
@@ -464,10 +471,11 @@ def filter_commands(commands, query, regex_mode, best_match=False):
     for idx, cmd in enumerate(commands):
         score = scorer(query, cmd)
         if score is not None:
-            scored.append((score, idx, cmd))
-    if best_match:
-        scored.sort(key=lambda x: (x[0], x[1]))
-    return [(idx, cmd) for _score, idx, cmd in scored]
+            literal_match = regex_mode or extended_score(query, cmd, literal_terms=True) is not None
+            literal_rank = 0 if literal_match else 1
+            scored.append((literal_rank, score, idx, cmd))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]) if best_match else (x[0], x[2]))
+    return [(idx, cmd) for _literal_rank, _score, idx, cmd in scored]
 
 
 def _term_size(fd):
