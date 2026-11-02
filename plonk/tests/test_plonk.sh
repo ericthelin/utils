@@ -63,6 +63,13 @@ resume_out="$(cd dl && "$BIN/plonk" --no-prompt Widget_bar-2.0-x86_64.AppImage 2
 touch dl/tool.deb dl/thing.flatpak
 "$BIN/plonk" -n dl/tool.deb 2>&1 | grep -q "sudo apt install" \
   && check "a .deb is installed with apt" ok || check "a .deb is installed with apt" no
+multi_out="$("$BIN/plonk" -n dl/tool.deb dl/thing.flatpak 2>&1)"
+[[ "$multi_out" == *"apt install"*tool.deb* && "$multi_out" == *"flatpak install --user"*thing.flatpak* ]] \
+  && check "several files are installed in one run" ok || check "several files are installed in one run: $multi_out" no
+touch dl/junk.xyz
+partial_out="$("$BIN/plonk" -n dl/junk.xyz dl/tool.deb 2>&1)"; partial_rc=$?
+[[ $partial_rc -eq 2 && "$partial_out" == *"apt install"* && "$partial_out" == *"Failed: dl/junk.xyz"* ]] \
+  && check "a failing file does not stop the others" ok || check "a failing file does not stop the others: $partial_out" no
 "$BIN/plonk" -n dl/thing.flatpak 2>&1 | grep -q "flatpak install --user" \
   && check "a .flatpak is installed for the user" ok || check "a .flatpak is installed for the user" no
 

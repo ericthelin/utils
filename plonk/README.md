@@ -50,6 +50,7 @@ it on files you downloaded from a source you trust.
 ```bash
 plonk ~/Downloads/SomeApp-2.0-x86_64.AppImage   # install + launcher
 plonk ~/Downloads/tool_1.2_amd64.deb            # apt install
+plonk ~/Downloads/*.deb                         # several files, one after another
 plonk ~/Downloads/thing.flatpak                 # flatpak install --user
 plonk ~/Downloads/SomeApp.dmg                   # macOS: copy the app to ~/Applications
 plonk ~/Downloads/project-1.0.tar.gz            # unpack, build, install
@@ -59,12 +60,12 @@ plonk --dryrun -v ~/Downloads/SomeApp.AppImage  # just show what would happen
 ## Usage
 
 ```text
-plonk [options] <file>
+plonk [options] <file>...
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `<file>` | The download to install. |
+| `<file>...` | One or more downloads to install. Each is handled in turn; a failure is reported and the rest still run. |
 | `-n`, `--dryrun` | Print what would be done instead of doing it. |
 | `-v`, `--verbose` | Show every command as it runs. |
 | `--copy` | Keep the original file. By default it is moved (AppImage) or deleted after a successful install (`.deb`, archive). |
@@ -85,6 +86,9 @@ plonk [options] <file>
 | A folder (for example a leftover `<name>_extract`) | Treated like an unpacked prebuilt application: moved into `~/Applications`, symlinked and given a launcher. Use this to finish an install that stopped after extraction. |
 | `*.run`, or a script | Made executable and **run**. |
 | Anything else | `Unhandled file type`, exit status 2. |
+
+With several files, each is installed independently in the order given. If any
+fail, `plonk` lists them at the end and exits with the highest failure status.
 
 `tgz` and `mmmake` are found next to `plonk` in this repository's `bin/`
 directory, or on your `PATH`.

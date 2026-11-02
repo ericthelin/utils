@@ -264,19 +264,36 @@ def install_extracted(extract_dir, verbose=False):
     return True
 
 def main():
-
     parser = argparse.ArgumentParser(description='Install AppImage, .deb, .dmg, or build from archive')
-    parser.add_argument('file', help='File to install')
+    parser.add_argument('files', nargs='+', metavar='file', help='File(s) to install')
     parser.add_argument('-n', '--dryrun', action='store_true', help='Dry run')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose')
     parser.add_argument('--copy', action='store_true', help='Copy file instead of move/delete (default: move/delete)')
     parser.add_argument('--no-prompt', action='store_true', help='Do not prompt to edit symlink name (default: prompt for new symlinks)')
     args = parser.parse_args()
 
-    def is_flatpak(filename):
-        return filename.lower().endswith('.flatpak')
+    status = 0
+    failed = []
+    for file_arg in args.files:
+        try:
+            install_file(file_arg, args)
+        except SystemExit as e:
+            if e.code:
+                status = max(status, e.code if isinstance(e.code, int) else 1)
+                failed.append(file_arg)
+        except subprocess.CalledProcessError as e:
+            print(f"Install of {file_arg} failed: {e}", file=sys.stderr)
+            status = max(status, 1)
+            failed.append(file_arg)
+    if failed and len(args.files) > 1:
+        print(f"Failed: {', '.join(failed)}", file=sys.stderr)
+    sys.exit(status)
 
-    file_path = Path(args.file).expanduser().resolve()
+def is_flatpak(filename):
+    return filename.lower().endswith('.flatpak')
+
+def install_file(file_arg, args):
+    file_path = Path(file_arg).expanduser().resolve()
     if not file_path.exists():
         installed = Path.home() / 'Applications' / file_path.name
         if not installed.is_file():
