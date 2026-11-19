@@ -22,6 +22,19 @@ class PrefixTests(unittest.TestCase):
         self.assertEqual(git_go.prefixed_name("x", "abc"), "x")
 
 
+class StashTests(unittest.TestCase):
+    ENTRIES = [("stash@{0}", "On main: git-go stash of x/a"),
+               ("stash@{1}", "On main: git-go stash of a"),
+               ("stash@{2}", "On a: manual")]
+
+    def test_finds_stash_for_exact_branch(self):
+        self.assertEqual(git_go.find_stash(self.ENTRIES, "a"), "stash@{1}")
+        self.assertEqual(git_go.find_stash(self.ENTRIES, "x/a"), "stash@{0}")
+
+    def test_ignores_foreign_stashes(self):
+        self.assertIsNone(git_go.find_stash(self.ENTRIES, "main"))
+
+
 class HistoryTests(unittest.TestCase):
     def test_rewrites_zsh_entry(self):
         line = ": 1792694921:0;git go fix-login\n"

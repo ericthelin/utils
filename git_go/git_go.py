@@ -97,6 +97,67 @@ def git(*args, quiet=False):
                           stderr=subprocess.DEVNULL if quiet else None).returncode
 
 
+def git_output(*args):
+    result = subprocess.run(["git", *args], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def stash_summary(branch):
+    return "git-go stash of " + branch
+
+
+def find_stash(entries, branch):
+    """Return the ref of the newest stash git-go made for branch, or None.
+
+    entries are (ref, subject) pairs, newest first, as in `git stash list`.
+    """
+    suffix = ": " + stash_summary(branch)
+    for ref, subject in entries:
+        if subject.endswith(suffix):
+            return ref
+    return None
+
+
+def list_stashes():
+    out = git_output("stash", "list", "--format=%gd%x09%gs")
+    return [tuple(line.split("\t", 1)) for line in out.splitlines() if "\t" in line]
+
+
+def has_local_changes():
+    return bool(git_output("status", "--porcelain"))
+
+
+def confirm(question):
+    try:
+        reader = open("/dev/tty", "r")
+        tty = open("/dev/tty", "w")
+    except OSError:
+        return False
+    with reader, tty:
+        tty.write(question + " [y/N] ")
+        tty.flush()
+        return reader.readline().strip().lower() in ("y", "yes")
+
+
+def stash_local_changes(current):
+    """Offer to stash local changes; return False if the user must not switch."""
+    if not has_local_changes():
+        return True
+    if not confirm("You have local changes on '%s'. Stash them?" % current):
+        return True
+    return git("stash", "push", "--include-untracked", "-m", stash_summary(current)) == 0
+
+
+def restore_stash(branch):
+    ref = find_stash(list_stashes(), branch)
+    if ref is None:
+        return
+    if git("stash", "pop", ref) == 0:
+        banner("45", "↺ RESTORED STASHED CHANGES", branch)
+    else:
+        print("Could not apply %s cleanly; it was kept in the stash list." % ref)
+
+
 def banner(color, text, name):
     print("\n\033[1;97;%sm  %s: %s  \033[0m\n" % (color, text, name))
 
@@ -106,14 +167,23 @@ def main(argv):
         print("usage: git go BRANCH\n\n"
               "Switch to BRANCH, creating it if it does not exist. New branches that\n"
               "do not start with %s\n"
-              "offer to add one first." % ", ".join(PREFIXES))
+              "offer to add one first.\n\n"
+              "When switching to an existing branch with local changes, it offers to\n"
+              "stash them (summary \"git-go stash of <branch>\") and restores the stash\n"
+              "made earlier for the target branch, if any." % ", ".join(PREFIXES))
         return 0 if argv and argv[0] in ("-h", "--help") else 2
 
     name = argv[0]
     if git("show-ref", "--verify", "--quiet", "refs/heads/" + name, quiet=True) == 0:
+        current = git_output("rev-parse", "--abbrev-ref", "HEAD")
+        switching = current != name
+        if switching and not stash_local_changes(current):
+            return 1
         status = git("checkout", name)
         if status == 0:
             banner("44", "✔ REUSED EXISTING BRANCH", name)
+            if switching:
+                restore_stash(name)
         return status
 
     original = name
