@@ -51,8 +51,13 @@ git go my-branch
 
 ## How it behaves
 
-1. If the local branch exists, it is checked out. No prompt, no history change.
-2. Otherwise, if the name has none of the standard prefixes, a menu is shown on
+1. If the local branch exists, it is checked out. If you are on another branch
+   with local changes (including untracked files), it first asks on the terminal
+   whether to stash them, using the summary `git-go stash of <current branch>`.
+   After the switch, a stash earlier made by `git go` for the target branch is
+   popped (the newest one; on conflicts it stays in the stash list). No history
+   change. Without a terminal nothing is stashed.
+2. Otherwise (no stashing; changes carry over), if the name has none of the standard prefixes, a menu is shown on
    the terminal (`/dev/tty`). Without a terminal the name is kept as typed.
 3. The branch is created from the current commit with `git checkout -b`.
 4. If a prefix was added, the history file (`$HISTFILE`, else `~/.zsh_history`,
